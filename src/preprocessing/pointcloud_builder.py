@@ -11,14 +11,17 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Tuple
+import sys
 
 try:
     import cv2
-except Exception:  # OpenCV optional
+    _cv2_import_error: Exception | None = None
+except Exception as exc:  # OpenCV optional
+    _cv2_import_error = exc
     cv2 = None
 import numpy as np
 
-from ..config import PhaseBin, ScanSample
+from ..config import PhaseBin, PointCloudConfig, ScanSample
 
 
 def _volume_voxel_world_coords(volume_shape: Tuple[int, int, int], pixel_spacing: float, slice_thickness: float) -> np.ndarray:
@@ -82,6 +85,7 @@ def samples_to_pointcloud(
     对每个 sample 的每个 depth 切片做阈值分割 -> 形态学清理 -> 提取外部轮廓 -> 均匀采样 -> 投影到世界坐标
     """
     world_points = []
+    warned_no_cv2 = False
     for s in samples:
         vol = np.asarray(s.volume_slice, dtype=float)
         if vol.ndim == 2:
@@ -97,32 +101,50 @@ def samples_to_pointcloud(
         # per-slice contour extraction
         for d in range(D):
             frame = vol[d]
-            bw = (frame > thr).astype('uint8') * 255
-            if bw.sum() == 0:
-                continue
-            kernel = np.ones((3, 3), np.uint8)
-            bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
-            bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
-            contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            if not contours:
-                continue
-            for ctr in contours:
-                area = cv2.contourArea(ctr)
-                if area < min_contour_area:
+            if cv2 is None:
+                if not warned_no_cv2:
+                    print(f"[PointCloud] OpenCV(cv2) 不可用，使用阈值体素降级提取 | python={sys.executable} | error={_cv2_import_error!r}")
+                    warned_no_cv2 = True
+                mask = frame > thr
+                if not np.any(mask):
                     continue
-                pts2d = ctr.squeeze().astype(float)
-                sampled = _uniform_sample_contour(pts2d, spacing=sample_spacing)
-                if sampled.size == 0:
+                pts2d = np.argwhere(mask)[:, ::-1].astype(float)
+                step = max(1, int(round(sample_spacing)))
+                sampled = pts2d[::step]
+            else:
+                bw = (frame > thr).astype("uint8") * 255
+                if bw.sum() == 0:
                     continue
-                xs = (sampled[:, 0] - (W - 1) / 2.0) * pixel_spacing
-                ys = (sampled[:, 1] - (H - 1) / 2.0) * pixel_spacing
-                zs = np.full((sampled.shape[0],), (d - (D - 1) / 2.0) * slice_thickness)
-                coords_local = np.column_stack([xs, ys, zs])
+                kernel = np.ones((3, 3), np.uint8)
+                bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
+                bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
+                contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                if not contours:
+                    continue
+                sampled_list = []
+                for ctr in contours:
+                    area = cv2.contourArea(ctr)
+                    if area < min_contour_area:
+                        continue
+                    pts2d = ctr.squeeze().astype(float)
+                    contour_samples = _uniform_sample_contour(pts2d, spacing=sample_spacing)
+                    if contour_samples.size != 0:
+                        sampled_list.append(contour_samples)
+                if not sampled_list:
+                    continue
+                sampled = np.vstack(sampled_list)
 
-                R_mat = np.asarray(s.orientation, dtype=float)
-                t_vec = np.asarray(s.position, dtype=float)
-                pts_world = (R_mat @ coords_local.T).T + t_vec.reshape(1, 3)
-                world_points.append(pts_world)
+            if sampled.size == 0:
+                continue
+            xs = (sampled[:, 0] - (W - 1) / 2.0) * pixel_spacing
+            ys = (sampled[:, 1] - (H - 1) / 2.0) * pixel_spacing
+            zs = np.full((sampled.shape[0],), (d - (D - 1) / 2.0) * slice_thickness)
+            coords_local = np.column_stack([xs, ys, zs])
+
+            R_mat = np.asarray(s.orientation, dtype=float)
+            t_vec = np.asarray(s.position, dtype=float)
+            pts_world = (R_mat @ coords_local.T).T + t_vec.reshape(1, 3)
+            world_points.append(pts_world)
 
     if not world_points:
         return np.zeros((0, 3), dtype=float)
@@ -151,16 +173,43 @@ def write_ply(points: np.ndarray, out_path: str) -> None:
             f.write(f"{x:.6f} {y:.6f} {z:.6f}\n")
 
 
-def build_pointclouds_from_phase_bins(phase_bins: List[PhaseBin], *, out_dir: str | Path = "data/processed/phase_pointclouds", pixel_spacing: float = 1.0, slice_thickness: float = 1.0, intensity_threshold: float | str = "auto", max_points_per_phase: int | None = 200000) -> List[Path]:
+def build_pointclouds_from_phase_bins(
+    phase_bins: List[PhaseBin],
+    *,
+    pointcloud_config: PointCloudConfig | None = None,
+    out_dir: str | Path | None = None,
+    pixel_spacing: float | None = None,
+    slice_thickness: float | None = None,
+    intensity_threshold: float | str | None = None,
+    min_contour_area: float | None = None,
+    sample_spacing: float | None = None,
+    max_points_per_phase: int | None = None,
+) -> List[Path]:
     """为每个相位分箱生成点云文件并返回写入路径列表。"""
-    out_dir = Path(out_dir)
+    cfg = pointcloud_config or PointCloudConfig()
+    out_dir = Path(out_dir if out_dir is not None else cfg.out_dir)
+    pixel_spacing = float(pixel_spacing if pixel_spacing is not None else cfg.pixel_spacing)
+    slice_thickness = float(slice_thickness if slice_thickness is not None else cfg.slice_thickness)
+    intensity_threshold = intensity_threshold if intensity_threshold is not None else cfg.intensity_threshold
+    min_contour_area = float(min_contour_area if min_contour_area is not None else cfg.min_contour_area)
+    sample_spacing = float(sample_spacing if sample_spacing is not None else cfg.sample_spacing)
+    max_points_per_phase = max_points_per_phase if max_points_per_phase is not None else cfg.max_points_per_phase
+
     written = []
     for idx, bin in enumerate(phase_bins):
         samples = bin.samples
         if not samples:
             print(f"[PointCloud] phase {idx} (center={bin.phase_center:.3f}): no samples, skip")
             continue
-        pts = samples_to_pointcloud(samples, pixel_spacing=pixel_spacing, slice_thickness=slice_thickness, intensity_threshold=intensity_threshold, max_points=max_points_per_phase)
+        pts = samples_to_pointcloud(
+            samples,
+            pixel_spacing=pixel_spacing,
+            slice_thickness=slice_thickness,
+            intensity_threshold=intensity_threshold,
+            min_contour_area=min_contour_area,
+            sample_spacing=sample_spacing,
+            max_points=max_points_per_phase,
+        )
         if pts.size == 0:
             print(f"[PointCloud] phase {idx} (center={bin.phase_center:.3f}): no points extracted")
             continue

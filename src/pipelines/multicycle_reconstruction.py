@@ -70,25 +70,23 @@ class MulticycleReconstructionPipeline:
             pc_cfg = self.config.pointcloud
             written = build_pointclouds_from_phase_bins(
                 phase_bins,
-                out_dir=pc_cfg.out_dir,
-                pixel_spacing=pc_cfg.pixel_spacing,
-                slice_thickness=pc_cfg.slice_thickness,
-                intensity_threshold=pc_cfg.intensity_threshold,
-                min_contour_area=pc_cfg.min_contour_area,
-                sample_spacing=pc_cfg.sample_spacing,
-                max_points_per_phase=pc_cfg.max_points_per_phase,
+                pointcloud_config=pc_cfg,
             )
             print(f"[Pipeline] 已导出 {len(written)} 个相位点云")
             print(f"[Pipeline] 点云文件位置: {pc_cfg.out_dir}")
         except Exception as e:
             print(f"[Pipeline] 点云导出失败: {e}")
 
-        # # 4. 构建参考网格并执行配准（继续原始流程）
-        # print("[Pipeline] 构建参考网格")
-        # reference = self.reference_builder.build(phase_bins)
-        # print("[Pipeline] 参考网格构建完成，开始配准")
-        # aligned_collections = [self.registrar.register_phase_bin(bin_data, reference) for bin_data in phase_bins]
-        # print("[Pipeline] 配准完成")
+        # 4. 构建参考网格并执行配准
+        print("[Pipeline] 构建参考网格")
+        reference = self.reference_builder.build(phase_bins)
+        print("[Pipeline] 参考网格构建完成，开始配准")
+        try:
+            aligned_collections = [self.registrar.register_phase_bin(bin_data, reference) for bin_data in phase_bins]
+            print("[Pipeline] 配准完成")
+        except Exception as e:
+            print(f"[Pipeline] 配准失败，使用未配准体积回退: {e}")
+            aligned_collections = [[np.asarray(sample.volume_slice, dtype=float) for sample in bin_data.samples] for bin_data in phase_bins]
 
         # 5. 加权平均得到相位三维容积
         print("[Pipeline] 开始加权平均")
@@ -99,8 +97,9 @@ class MulticycleReconstructionPipeline:
         print("[Pipeline] 开始时间插值")
         temporal_model = self.interpolator.build(phase_volumes)
         print("[Pipeline] 时间插值完成")
-        # 5. 模型验证与报告
+        # 7. 模型验证与报告
         print("[Pipeline] 开始模型验证")
+        phase_template = [float(f.value) for f in features]
         validation_report = self.validator.validate(temporal_model, phase_template)
         print("[Pipeline] 模型验证完成")
         return PipelineOutput(phase_volumes=phase_volumes, temporal_model=temporal_model, validation_report=validation_report)
