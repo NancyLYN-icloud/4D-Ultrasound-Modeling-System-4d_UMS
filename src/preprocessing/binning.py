@@ -42,21 +42,21 @@ class PhaseBinner:
 		if avg_duration <= 0:
 			raise ValueError("avg_duration must be positive")
 		span = max(0.0, end - start)
-		n_cycles = int(np.floor((span + 1e-8) / avg_duration)) if end > start else 1
+		n_cycles = int(np.ceil((span + 1e-8) / avg_duration)) if end > start else 1
 		from ..config import CycleInfo
 
 		cycles: List[CycleInfo] = []
 		for i in range(n_cycles):
 			s = start + i * avg_duration
-			e = s + avg_duration
+			e = min(s + avg_duration, end)
 			if e <= s:
 				continue
 			peak = s + 0.5 * (e - s)
 			cycles.append(CycleInfo(index=i, start_time=float(s), peak_time=float(peak), end_time=float(e)))
-		if span > n_cycles * avg_duration + 1e-6:
+		if cycles and cycles[-1].duration < avg_duration - 1e-6:
 			print(
-				"[PhaseBinner] 忽略尾部不完整周期: "
-				f"剩余 {span - n_cycles * avg_duration:.3f}s / 周期 {avg_duration:.3f}s"
+				"[PhaseBinner] 保留尾部不完整周期: "
+				f"末周期 {cycles[-1].duration:.3f}s / 平均周期 {avg_duration:.3f}s"
 			)
 		return cycles
 
