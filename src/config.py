@@ -24,9 +24,8 @@ class PhaseDetectionConfig:
 
     smoothing_window: int = 9  # 奇数窗口长度
     smoothing_poly_order: int = 3  # Savitzky-Golay 多项式阶数
-    # min_cycle_seconds: float = 2.0  # 最短周期 (s)
-    # max_cycle_seconds: float = 6.0  # 最长周期 (s)
-    # sampling_rate: float = 30.0  # 2D 序列采样率 (Hz)
+    min_cycle_seconds: float = 2.0  # 最短周期 (s)
+    max_cycle_seconds: float = 8.0  # 最长周期 (s)
     bin_edges: Sequence[float] = tuple(np.linspace(0.0, 1.0, 11))
 
 
@@ -70,7 +69,7 @@ class PointCloudConfig:
     - `max_points_per_phase`: 每相位导出的最大点数（用于下采样避免内存暴涨）。
     """
 
-    pixel_spacing: float = 1.0
+    pixel_spacing: float = 0.42
     slice_thickness: float = 1.0
     intensity_threshold: float | str = "auto"
     min_contour_area: float = 50.0

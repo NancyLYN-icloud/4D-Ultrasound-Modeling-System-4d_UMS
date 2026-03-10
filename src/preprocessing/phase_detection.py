@@ -18,20 +18,38 @@ class PhaseDetector:
     def detect_cycles(self, features: Sequence[FrameFeature]) -> List[CycleInfo]:
         """返回所有满足约束的周期。"""
         print(f"[PhaseDetector] detect_cycles: 特征点数量 {len(features)}")
+        if len(features) < 2:
+            print("[PhaseDetector] 特征点不足，无法检测周期")
+            return []
+
         timestamps = [f.timestamp for f in features]  # 取出每个特征点的时间戳
         values = [f.value for f in features]  # 取出特征值序列（面积/厚度曲线）
         # 自动估计采样率：使用时间戳差的平均倒数
-        if len(timestamps) > 1:
-            diffs = np.diff(timestamps)
-            estimated_rate = 1.0 / (np.mean(diffs) + 1e-8)
+        diffs = np.diff(timestamps)
+        estimated_rate = 1.0 / (np.mean(diffs) + 1e-8)
         
         print(f"[PhaseDetector] 估计采样率: {estimated_rate:.2f} Hz")
         
-        # 自动估计周期范围：基于总时长
-        total_duration = timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 1.0 
-        min_cycle_seconds = total_duration / 10.0  # 假设最多 10 个周期
-        max_cycle_seconds = total_duration / 2.0   # 至少 2 个周期
-        print(f"[PhaseDetector] 自动周期范围: {min_cycle_seconds:.2f} - {max_cycle_seconds:.2f} s (总时长 {total_duration:.2f} s)")
+        total_duration = timestamps[-1] - timestamps[0]
+        if total_duration <= 0:
+            print("[PhaseDetector] 时间跨度无效，无法检测周期")
+            return []
+
+        min_cycle_seconds = max(float(self.config.min_cycle_seconds), float(np.mean(diffs) * 2.0))
+        max_cycle_seconds = min(float(self.config.max_cycle_seconds), float(total_duration))
+        if max_cycle_seconds <= min_cycle_seconds:
+            max_cycle_seconds = min(float(total_duration), min_cycle_seconds * 1.5)
+        if max_cycle_seconds <= min_cycle_seconds:
+            print(
+                "[PhaseDetector] 有效周期范围不足，"
+                f"min={min_cycle_seconds:.2f}s max={max_cycle_seconds:.2f}s"
+            )
+            return []
+
+        print(
+            f"[PhaseDetector] 周期范围: {min_cycle_seconds:.2f} - {max_cycle_seconds:.2f} s "
+            f"(总时长 {total_duration:.2f} s)"
+        )
         
         cycle_bounds = signals.estimate_cycles(
             timestamps=timestamps,

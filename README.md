@@ -28,6 +28,8 @@ python main.py
 - 高帧率监测阶段的 ROI 图像和时间戳输入 `UltrasoundMonitor.record`；
 - 自由臂扫描阶段的 **视频帧 + 时间戳 + 位姿** 输入 `FreeArmScanner.ingest_frame_sequence`（内部会将 2D 帧按照姿态复制成薄层 3D 体素块），或直接调用 `FreeArmScanner.record` 喂入已重建好的 3D 数据。
 
+项目自带测试扫描数据使用 `0.42 mm/pixel` 的面内标定；当前默认点云导出也按该标定恢复空间尺寸。若接入真实设备，请同步覆盖 `PipelineConfig().pointcloud.pixel_spacing` 与 `slice_thickness`。
+
 两类数据准备完毕后，即可像示例那样调用 `MulticycleReconstructionPipeline`。
 
 ## 依赖

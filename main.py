@@ -13,7 +13,7 @@ def main() -> None:
     """研究阶段示例：使用仿真数据验证流程连通性。"""
     config = PipelineConfig()
     #monitor = UltrasoundMonitor.simulate(config.acquisition) #应用仿真数据时启用此行
-    monitor = UltrasoundMonitor.from_npz(config.acquisition, "data/raw/monitor_stream.npz") #使用预录制数据时启用此行
+    monitor = UltrasoundMonitor.from_npz(config.acquisition, "data/test/monitor_stream.npz") #使用预录制数据时启用此行
     print(f"加载监测器，包含 {len(monitor.frames)} 帧") 
     if monitor.frames:
         print(f"  第一帧形状: {monitor.frames[0].image.shape}")
@@ -21,7 +21,7 @@ def main() -> None:
         # print(f"  第一帧均值: {np.mean(monitor.frames[0].image):.2f}, 标准差: {np.std(monitor.frames[0].image):.2f}")
     
     #scanner = FreeArmScanner.simulate(config.acquisition) #应用仿真数据时启用此行
-    scanner = FreeArmScanner.from_npz(config.acquisition, "data/raw/scanner_sequence.npz") #使用预录制数据时启用此行
+    scanner = FreeArmScanner.from_npz(config.acquisition, "data/test/scanner_sequence.npz") #使用预录制数据时启用此行
     print(f"加载扫描器，包含 {len(scanner.samples)} 个样本")
     if scanner.samples:
         print(f"  第一个样本体积形状: {scanner.samples[0].volume_slice.shape}")
