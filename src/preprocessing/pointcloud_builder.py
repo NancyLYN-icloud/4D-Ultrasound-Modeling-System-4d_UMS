@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 import sys
@@ -22,6 +23,26 @@ except Exception as exc:  # OpenCV optional
 import numpy as np
 
 from ..config import PhaseBin, PointCloudConfig, ScanSample
+
+
+def _create_indexed_output_dir(base_dir: Path, prefix: str = "phase_pointclouds_run") -> tuple[Path, str]:
+    """在基础目录下创建带递增编号与时间戳的新输出目录。"""
+    base_dir.mkdir(parents=True, exist_ok=True)
+    existing_indices: list[int] = []
+    for child in base_dir.iterdir():
+        if not child.is_dir() or not child.name.startswith(prefix + "_"):
+            continue
+        remainder = child.name[len(prefix) + 1 :]
+        run_token = remainder.split("_", 1)[0]
+        if run_token.isdigit():
+            existing_indices.append(int(run_token))
+
+    next_index = max(existing_indices, default=0) + 1
+    run_id = f"{next_index:03d}"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    run_dir = base_dir / f"{prefix}_{run_id}_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir, run_id
 
 
 def _volume_voxel_world_coords(volume_shape: Tuple[int, int, int], pixel_spacing: float, slice_thickness: float) -> np.ndarray:
@@ -71,6 +92,17 @@ def _uniform_sample_contour(contour: np.ndarray, spacing: float = 2.0) -> np.nda
     return np.asarray(sampled, dtype=float)
 
 
+def _binary_boundary(mask: np.ndarray) -> np.ndarray:
+    if mask.ndim != 2 or not np.any(mask):
+        return np.zeros_like(mask, dtype=bool)
+    padded = np.pad(mask.astype(bool), 1, mode="constant", constant_values=False)
+    eroded = np.ones_like(mask, dtype=bool)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            eroded &= padded[1 + dy : 1 + dy + mask.shape[0], 1 + dx : 1 + dx + mask.shape[1]]
+    return mask.astype(bool) & ~eroded
+
+
 def samples_to_pointcloud(
     samples: List[ScanSample], *,
     pixel_spacing: float = 1.0,
@@ -103,14 +135,16 @@ def samples_to_pointcloud(
             frame = vol[d]
             if cv2 is None:
                 if not warned_no_cv2:
-                    print(f"[PointCloud] OpenCV(cv2) 不可用，使用阈值体素降级提取 | python={sys.executable} | error={_cv2_import_error!r}")
+                    print(f"[PointCloud] OpenCV(cv2) 不可用，使用边界降级提取 | python={sys.executable} | error={_cv2_import_error!r}")
                     warned_no_cv2 = True
                 mask = frame > thr
-                if not np.any(mask):
+                boundary = _binary_boundary(mask)
+                if not np.any(boundary):
                     continue
-                pts2d = np.argwhere(mask)[:, ::-1].astype(float)
+                pts2d = np.argwhere(boundary)[:, ::-1].astype(float)
                 step = max(1, int(round(sample_spacing)))
                 sampled = pts2d[::step]
+                sampled_sets = [sampled] if sampled.size != 0 else []
             else:
                 bw = (frame > thr).astype("uint8") * 255
                 if bw.sum() == 0:
@@ -121,30 +155,26 @@ def samples_to_pointcloud(
                 contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
                 if not contours:
                     continue
-                sampled_list = []
+                sampled_sets = []
                 for ctr in contours:
                     area = cv2.contourArea(ctr)
                     if area < min_contour_area:
                         continue
                     pts2d = ctr.squeeze().astype(float)
-                    contour_samples = _uniform_sample_contour(pts2d, spacing=sample_spacing)
-                    if contour_samples.size != 0:
-                        sampled_list.append(contour_samples)
-                if not sampled_list:
-                    continue
-                sampled = np.vstack(sampled_list)
+                    sampled = _uniform_sample_contour(pts2d, spacing=sample_spacing)
+                    if sampled.size != 0:
+                        sampled_sets.append(sampled)
 
-            if sampled.size == 0:
-                continue
-            xs = (sampled[:, 0] - (W - 1) / 2.0) * pixel_spacing
-            ys = (sampled[:, 1] - (H - 1) / 2.0) * pixel_spacing
-            zs = np.full((sampled.shape[0],), (d - (D - 1) / 2.0) * slice_thickness)
-            coords_local = np.column_stack([xs, ys, zs])
+            for sampled in sampled_sets:
+                xs = (sampled[:, 0] - (W - 1) / 2.0) * pixel_spacing
+                ys = (sampled[:, 1] - (H - 1) / 2.0) * pixel_spacing
+                zs = np.full((sampled.shape[0],), (d - (D - 1) / 2.0) * slice_thickness)
+                coords_local = np.column_stack([xs, ys, zs])
 
-            R_mat = np.asarray(s.orientation, dtype=float)
-            t_vec = np.asarray(s.position, dtype=float)
-            pts_world = (R_mat @ coords_local.T).T + t_vec.reshape(1, 3)
-            world_points.append(pts_world)
+                R_mat = np.asarray(s.orientation, dtype=float)
+                t_vec = np.asarray(s.position, dtype=float)
+                pts_world = (R_mat @ coords_local.T).T + t_vec.reshape(1, 3)
+                world_points.append(pts_world)
 
     if not world_points:
         return np.zeros((0, 3), dtype=float)
@@ -187,13 +217,16 @@ def build_pointclouds_from_phase_bins(
 ) -> List[Path]:
     """为每个相位分箱生成点云文件并返回写入路径列表。"""
     cfg = pointcloud_config or PointCloudConfig()
-    out_dir = Path(out_dir if out_dir is not None else cfg.out_dir)
+    base_out_dir = Path(out_dir if out_dir is not None else cfg.out_dir)
     pixel_spacing = float(pixel_spacing if pixel_spacing is not None else cfg.pixel_spacing)
     slice_thickness = float(slice_thickness if slice_thickness is not None else cfg.slice_thickness)
     intensity_threshold = intensity_threshold if intensity_threshold is not None else cfg.intensity_threshold
     min_contour_area = float(min_contour_area if min_contour_area is not None else cfg.min_contour_area)
     sample_spacing = float(sample_spacing if sample_spacing is not None else cfg.sample_spacing)
     max_points_per_phase = max_points_per_phase if max_points_per_phase is not None else cfg.max_points_per_phase
+
+    out_dir, run_id = _create_indexed_output_dir(base_out_dir)
+    print(f"[PointCloud] 本次输出目录: {out_dir}")
 
     written = []
     for idx, bin in enumerate(phase_bins):
@@ -213,7 +246,7 @@ def build_pointclouds_from_phase_bins(
         if pts.size == 0:
             print(f"[PointCloud] phase {idx} (center={bin.phase_center:.3f}): no points extracted")
             continue
-        out_path = out_dir / f"phase_{idx:03d}_{bin.phase_center:.3f}.ply"
+        out_path = out_dir / f"run_{run_id}_phase_{idx:03d}_{bin.phase_center:.3f}.ply"
         write_ply(pts, str(out_path))
         print(f"[PointCloud] 写入 {out_path} ({pts.shape[0]} pts)")
         written.append(out_path)

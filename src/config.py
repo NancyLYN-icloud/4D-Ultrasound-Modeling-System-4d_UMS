@@ -76,8 +76,8 @@ class PointCloudConfig:
     min_contour_area: float = 50.0
     sample_spacing: float = 2.0
     max_points_per_phase: int | None = 200000
-    # 点云输出目录（相位点云将写入该目录下）
-    out_dir: str = "data/processed/phase_pointclouds"
+    # 点云输出基础目录（每次运行会在该目录下自动新建一个带序号的子文件夹）
+    out_dir: str = "data/test/processed"
 
 
 @dataclass
