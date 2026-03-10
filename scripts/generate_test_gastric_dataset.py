@@ -3,19 +3,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import math
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+	sys.path.insert(0, str(ROOT))
+
+from src.config import FrameFeature, PipelineConfig
+from src.preprocessing.phase_detection import PhaseDetector
+
+
 OUT_DIR = ROOT / "data" / "test"
+RAW_OUT_DIR = ROOT / "data" / "raw"
 SCANNER_IMG_DIR = OUT_DIR / "image" / "scanner"
 REFERENCE_PLY = OUT_DIR / "stomach.ply"
+MONITOR_STREAM = RAW_OUT_DIR / "monitor_stream.npz"
 
 SCANNER_DURATION = 240.0
 SCANNER_FRAMES = 720
-GASTRIC_PERIOD = 20.0
 SWEEP_PERIOD = 5.7
 SCANNER_SIZE = 512
 SEED = 20260309
@@ -38,6 +47,23 @@ class GastricReferenceModel:
 def triangle_wave(x: np.ndarray) -> np.ndarray:
 	frac = x - np.floor(x)
 	return 1.0 - np.abs(2.0 * frac - 1.0)
+
+
+def detect_monitor_period(monitor_stream: Path) -> float:
+	if not monitor_stream.exists():
+		raise FileNotFoundError(f"Monitor stream not found: {monitor_stream}")
+	data = np.load(monitor_stream)
+	timestamps = data["timestamps"]
+	feature_trace = data["feature_trace"]
+	features = [
+		FrameFeature(timestamp=float(ts), value=float(value))
+		for ts, value in zip(timestamps, feature_trace)
+	]
+	cycles = PhaseDetector(PipelineConfig().phase_detection).detect_cycles(features)
+	if not cycles:
+		raise RuntimeError("No gastric cycles detected from monitor stream")
+	durations = np.asarray([cycle.duration for cycle in cycles], dtype=np.float64)
+	return float(np.mean(durations))
 
 
 def save_png(image: np.ndarray, path: Path) -> None:
@@ -271,8 +297,8 @@ def rasterize_binary_polygon(polygon_mm: np.ndarray, image_size: int, pixel_spac
 	return np.clip(array, 0.0, 1.0)
 
 
-def sweep_coordinate(t: float) -> float:
-	drift = 0.43 * (t / GASTRIC_PERIOD)
+def sweep_coordinate(t: float, gastric_period: float) -> float:
+	drift = 0.43 * (t / gastric_period)
 	return float(triangle_wave(np.array([t / SWEEP_PERIOD + drift], dtype=np.float64))[0])
 
 
@@ -292,15 +318,15 @@ def translate_binary_frame(frame: np.ndarray, shift_x: int, shift_y: int) -> np.
 	return translated
 
 
-def generate_scanner_stream(model: GastricReferenceModel) -> None:
+def generate_scanner_stream(model: GastricReferenceModel, gastric_period: float) -> None:
 	timestamps = np.linspace(0.0, SCANNER_DURATION, SCANNER_FRAMES, dtype=np.float64)
 	frames = np.zeros((SCANNER_FRAMES, SCANNER_SIZE, SCANNER_SIZE), dtype=np.float32)
 	positions = np.zeros((SCANNER_FRAMES, 3), dtype=np.float64)
 	orientations = np.zeros((SCANNER_FRAMES, 3, 3), dtype=np.float64)
 
 	for idx, t in enumerate(timestamps):
-		phase = float((t % GASTRIC_PERIOD) / GASTRIC_PERIOD)
-		s = sweep_coordinate(float(t))
+		phase = float((t % gastric_period) / gastric_period)
+		s = sweep_coordinate(float(t), gastric_period)
 		positions[idx] = world_centerline(model, s, phase)
 		orientations[idx] = probe_orientation(model, s, phase, float(t))
 
@@ -316,6 +342,7 @@ def generate_scanner_stream(model: GastricReferenceModel) -> None:
 		save_png(frame, SCANNER_IMG_DIR / f"scanner_{idx:04d}.png")
 
 	OUT_DIR.mkdir(parents=True, exist_ok=True)
+	RAW_OUT_DIR.mkdir(parents=True, exist_ok=True)
 	np.savez_compressed(
 		OUT_DIR / "scanner_sequence.npz",
 		frames=frames.astype(np.float32),
@@ -323,15 +350,31 @@ def generate_scanner_stream(model: GastricReferenceModel) -> None:
 		positions=positions,
 		orientations=orientations,
 	)
+	np.savez_compressed(
+		RAW_OUT_DIR / "scanner_sequence.npz",
+		frames=frames.astype(np.float32),
+		timestamps=timestamps,
+		positions=positions,
+		orientations=orientations,
+	)
+
+
+def clear_existing_scanner_pngs() -> None:
+	SCANNER_IMG_DIR.mkdir(parents=True, exist_ok=True)
+	for path in SCANNER_IMG_DIR.glob("scanner_*.png"):
+		path.unlink()
 
 
 def main() -> None:
 	if not REFERENCE_PLY.exists():
 		raise FileNotFoundError(f"Reference stomach point cloud not found: {REFERENCE_PLY}")
-	SCANNER_IMG_DIR.mkdir(parents=True, exist_ok=True)
+	gastric_period = detect_monitor_period(MONITOR_STREAM)
+	clear_existing_scanner_pngs()
 	model = load_reference_model(REFERENCE_PLY)
-	generate_scanner_stream(model)
-	print(f"Generated scanner data at {OUT_DIR / 'scanner_sequence.npz'}")
+	generate_scanner_stream(model, gastric_period)
+	print(f"Detected gastric period from monitor stream: {gastric_period:.6f}s")
+	print(f"Generated scanner data at {RAW_OUT_DIR / 'scanner_sequence.npz'}")
+	print(f"Mirror copy written to {OUT_DIR / 'scanner_sequence.npz'}")
 	print(f"Scanner PNGs: {SCANNER_IMG_DIR}")
 
 
