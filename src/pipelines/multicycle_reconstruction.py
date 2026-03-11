@@ -61,7 +61,7 @@ class MulticycleReconstructionPipeline:
         if not scanner.samples:
             raise RuntimeError("Scanner has no samples to bin")
         # use binner convenience method: returns (phase_bins, cycles)
-        phase_bins, scanner_cycles = self.binner.bin_samples_using_duration(scanner.samples, avg_duration, step_seconds=0.5)
+        phase_bins, scanner_cycles = self.binner.bin_samples_using_duration(scanner.samples, avg_duration)
         print(f"[Pipeline] 相位分箱完成，共 {len(phase_bins)} 个分箱，基于 {len(scanner_cycles)} 个周期")
         
         # 3. 构建点云

@@ -15,9 +15,9 @@ class PhaseBinner:
 	新增说明的方法：
 	- `split_timestamps_into_cycles(timestamps, avg_duration, t0=None)`:
 		根据平均周期时长把时间线切分为独立周期（返回 CycleInfo 列表）。
-	- `generate_bin_edges_by_time(avg_duration, step_seconds=0.5)`:
+	- `generate_bin_edges_by_time(avg_duration, step_seconds=None)`:
 		根据周期时长与相位步长（秒）生成归一化相位的分箱边界（在 [0,1] 上）。
-	- `bin_samples_using_duration(samples, avg_duration, step_seconds=0.5)`:
+	- `bin_samples_using_duration(samples, avg_duration, step_seconds=None)`:
 		将 `samples` 按 `avg_duration` 划分周期、对每个样本计算归一化相位，并按照生成的分箱返回 `PhaseBin` 列表与周期列表。
 	"""
 
@@ -60,18 +60,20 @@ class PhaseBinner:
 			)
 		return cycles
 
-	def generate_bin_edges_by_time(self, avg_duration: float, step_seconds: float = 0.5) -> np.ndarray:
+	def generate_bin_edges_by_time(self, avg_duration: float, step_seconds: float | None = None) -> np.ndarray:
 		"""根据周期时长和相位步长（秒）生成归一化相位的分箱边界（闭区间 [0,1]）。
 
 		例如：avg_duration=4s, step_seconds=0.5s => 每 0.5s 一个点，总共 8 个等间隔分段，返回 9 个边界。
 		"""
+		if step_seconds is None:
+			step_seconds = float(self.config.phase_bin_step_seconds)
 		if step_seconds <= 0:
 			raise ValueError("step_seconds must be positive")
 		n_bins = max(1, int(np.ceil(avg_duration / step_seconds)))
 		edges = np.linspace(0.0, 1.0, n_bins + 1)
 		return edges
 
-	def bin_samples_using_duration(self, samples: Sequence[ScanSample], avg_duration: float, step_seconds: float = 0.5) -> tuple[List[PhaseBin], List[CycleInfo]]:
+	def bin_samples_using_duration(self, samples: Sequence[ScanSample], avg_duration: float, step_seconds: float | None = None) -> tuple[List[PhaseBin], List[CycleInfo]]:
 		"""把 `samples`（按时间）基于平均周期时长划分周期、归一化相位，并分箱返回。
 
 		Returns: (phase_bins, cycles)
@@ -86,8 +88,10 @@ class PhaseBinner:
 			return [], []
 
 		# create bin edges based on desired temporal step and avg_duration
+		if step_seconds is None:
+			step_seconds = float(self.config.phase_bin_step_seconds)
 		bin_edges = self.generate_bin_edges_by_time(avg_duration, step_seconds)
-		bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+		bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:]) 
 
 		# compute normalized phases for each sample using existing signals.assign_phase
 		cycle_bounds = [(c.start_time, c.end_time) for c in cycles]
@@ -103,7 +107,17 @@ class PhaseBinner:
 			bins[bin_idx].samples.append(sample)
 
 		result = [bins[i] for i in range(len(bin_centers))]
-		print(f"[PhaseBinner] bin_samples_using_duration: samples={len(samples)}, cycles={len(cycles)}, bins={len(result)}")
+		bin_sizes = np.asarray([len(bin_data.samples) for bin_data in result], dtype=np.int32)
+		effective_bin_seconds = avg_duration / max(len(result), 1)
+		print(
+			f"[PhaseBinner] bin_samples_using_duration: samples={len(samples)}, cycles={len(cycles)}, "
+			f"avg_duration={avg_duration:.3f}s, step_seconds={step_seconds}, bins={len(result)}, "
+			f"effective_bin_seconds={effective_bin_seconds:.3f}s"
+		)
+		print(
+			f"[PhaseBinner] 各bin样本数: min={int(bin_sizes.min())}, max={int(bin_sizes.max())}, "
+			f"mean={float(bin_sizes.mean()):.2f}, first10={bin_sizes[:10].tolist()}"
+		)
 		return result, cycles
 
 	def bin_samples(self, samples: Sequence[ScanSample], cycles: Sequence[CycleInfo]) -> List[PhaseBin]:
