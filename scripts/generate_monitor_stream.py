@@ -1,36 +1,140 @@
-"""Generate monitor_stream.npz from image folder. img生成monitor_stream.npz
-- Reads images from data/Datawithimage/image_monitor
-- Resizes to 64x64 float32
-- Builds timestamps from 0 to 60s across frames
-- Computes feature_trace as mean intensity
-- Saves data/raw/monitor_stream.npz with keys: frames, timestamps, feature_trace
+"""Generate a synthetic gastric antrum monitor stream and matching PNG frames.
+
+The generated data mimics an ultrasound probe staying on a transverse antrum view
+for about one minute. The lumen contracts once every 20 seconds, producing three
+clear peristaltic cycles over the sequence.
 """
-import os
+
+from __future__ import annotations
+
 from pathlib import Path
+
 import numpy as np
 from PIL import Image
 
-SRC = Path("data/Datawithimage/image_monitor")
-OUT = Path("data/raw") / "monitor_stream.npz"
-OUT.parent.mkdir(parents=True, exist_ok=True)
 
-files = sorted([p for p in SRC.iterdir() if p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.tif', '.tiff')])
-if not files:
-    raise SystemExit(f"No images found in {SRC}")
+ROOT = Path(__file__).resolve().parents[1]
+OUT_NPZ = ROOT / "data" / "test" / "monitor_stream.npz"
+OUT_IMG_DIR = ROOT / "data" / "test" / "image" / "monitor"
 
-imgs = []
-for p in files:
-    im = Image.open(p).convert('L')
-    im = im.resize((64,64), Image.BILINEAR)
-    arr = np.asarray(im, dtype=np.float32) / 255.0
-    imgs.append(arr)
+IMAGE_SIZE = 64
+DURATION_SECONDS = 60.0
+FRAME_RATE = 3.0
+PERISTALSIS_PERIOD = 20.0
+RNG_SEED = 20260311
 
-frames = np.stack(imgs, axis=0).astype(np.float32)  # (N,64,64)
-N = frames.shape[0]
-# timestamps from 0 to 60s inclusive
-timestamps = np.linspace(0.0, 60.0, N, dtype=np.float32)
-# simple feature: mean intensity per frame
-feature_trace = frames.reshape(N, -1).mean(axis=1).astype(np.float32)
 
-np.savez_compressed(OUT, frames=frames, timestamps=timestamps, feature_trace=feature_trace)
-print(f"Wrote {OUT} with {N} frames, timestamps 0..60s")
+def periodic_distance(phase: np.ndarray, center: float) -> np.ndarray:
+    """Return wrapped phase distance on [0, 1)."""
+    return ((phase - center + 0.5) % 1.0) - 0.5
+
+
+def contraction_waveform(timestamps: np.ndarray) -> np.ndarray:
+    """Model a smooth gastric contraction pulse once every 20 seconds."""
+    phase = (timestamps / PERISTALSIS_PERIOD) % 1.0
+    contraction = np.exp(-0.5 * (periodic_distance(phase, 0.62) / 0.14) ** 2)
+    shoulder = 0.35 * np.exp(-0.5 * (periodic_distance(phase, 0.38) / 0.23) ** 2)
+    waveform = contraction + shoulder
+    waveform = (waveform - waveform.min()) / (waveform.max() - waveform.min())
+    return waveform.astype(np.float32)
+
+
+def make_coordinate_grid(size: int) -> tuple[np.ndarray, np.ndarray]:
+    axis = np.linspace(-1.0, 1.0, size, dtype=np.float32)
+    return np.meshgrid(axis, axis)
+
+
+def synthesize_frame(
+    xx: np.ndarray,
+    yy: np.ndarray,
+    contraction_level: float,
+    timestamp: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Create one synthetic transverse antrum ultrasound frame."""
+    drift_x = 0.03 * np.sin(2.0 * np.pi * timestamp / 45.0)
+    drift_y = 0.02 * np.cos(2.0 * np.pi * timestamp / 32.0)
+    x = xx - drift_x
+    y = yy - drift_y
+
+    radius = np.sqrt((x / 0.92) ** 2 + (y / 0.80) ** 2)
+    angle = np.arctan2(y, x)
+
+    lumen_radius = 0.42 - 0.12 * contraction_level
+    wall_thickness = 0.11 + 0.04 * contraction_level
+    muscularis_radius = lumen_radius + wall_thickness
+
+    background = 0.08 + 0.04 * (yy + 1.0)
+    probe_gain = np.exp(-((yy + 0.8) / 0.65) ** 2) * 0.10
+
+    antrum_lumen = np.exp(-((radius / max(lumen_radius, 0.12)) ** 6))
+    mucosa_ring = np.exp(-((radius - lumen_radius) / 0.055) ** 2)
+    serosa_ring = np.exp(-((radius - muscularis_radius) / 0.07) ** 2)
+    fold_texture = np.cos(4.0 * angle + timestamp * 0.35) * np.exp(-((radius - muscularis_radius) / 0.12) ** 2)
+    distal_shadow = np.exp(-((x + 0.10) / 0.38) ** 2 - ((y - 0.55) / 0.28) ** 2)
+
+    frame = background + probe_gain
+    frame -= 0.12 * antrum_lumen
+    frame += 0.42 * mucosa_ring
+    frame += 0.22 * serosa_ring
+    frame += 0.05 * fold_texture
+    frame -= 0.06 * contraction_level * distal_shadow
+
+    speckle = rng.normal(0.0, 0.035, size=frame.shape).astype(np.float32)
+    grain = rng.normal(1.0, 0.08, size=frame.shape).astype(np.float32)
+    frame = frame * grain + speckle
+
+    vignette = 1.0 - 0.22 * np.clip(np.sqrt(xx**2 + yy**2) - 0.6, 0.0, 1.0)
+    frame *= vignette
+
+    frame = np.clip(frame, 0.0, 1.0)
+    return frame.astype(np.float32)
+
+
+def save_png_sequence(frames: np.ndarray, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for path in output_dir.glob("monitor_*.png"):
+        path.unlink()
+
+    for index, frame in enumerate(frames):
+        image = Image.fromarray(np.round(frame * 255.0).astype(np.uint8), mode="L")
+        image.save(output_dir / f"monitor_{index:04d}.png")
+
+
+def main() -> None:
+    rng = np.random.default_rng(RNG_SEED)
+    total_frames = int(DURATION_SECONDS * FRAME_RATE)
+    timestamps = np.linspace(0.0, DURATION_SECONDS, total_frames, dtype=np.float32)
+    contraction = contraction_waveform(timestamps)
+    xx, yy = make_coordinate_grid(IMAGE_SIZE)
+
+    frames = np.stack(
+        [synthesize_frame(xx, yy, float(level), float(ts), rng) for ts, level in zip(timestamps, contraction)],
+        axis=0,
+    ).astype(np.float32)
+
+    feature_trace = (0.03 + 0.15 * contraction).astype(np.float32)
+
+    OUT_NPZ.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        OUT_NPZ,
+        frames=frames,
+        timestamps=timestamps,
+        feature_trace=feature_trace,
+    )
+    save_png_sequence(frames, OUT_IMG_DIR)
+
+    print(f"Wrote {OUT_NPZ} with shape {frames.shape}")
+    print(f"Saved {len(frames)} PNG files to {OUT_IMG_DIR}")
+    print(
+        "Feature trace range:",
+        f"{float(feature_trace.min()):.4f} .. {float(feature_trace.max()):.4f}",
+    )
+    print(
+        "Cycle count over duration:",
+        f"{DURATION_SECONDS / PERISTALSIS_PERIOD:.1f}",
+    )
+
+
+if __name__ == "__main__":
+    main()

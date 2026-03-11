@@ -123,12 +123,6 @@ def estimate_cycles(
             idx = sorted_indices[0]  # 默认第一个（最大）
             f0 = freqs[valid][idx]
             period_secs = 1.0 / f0 if f0 > 0 else None
-            if period_secs and period_secs > 10.0:  # 如果周期太长，选择第二个峰值
-                if len(sorted_indices) > 1:
-                    idx = sorted_indices[1]
-                    f0 = freqs[valid][idx]
-                    period_secs = 1.0 / f0 if f0 > 0 else None
-                    print(f"[signals] 周期过长，使用第二个峰值 FFT基频 {f0:.3f}Hz, 周期约 {period_secs:.3f}s")
             if period_secs is not None:
                 period_samples = int(round(period_secs * sampling_rate))
                 print(f"[signals] FFT基频 {f0:.3f}Hz, 周期约 {period_secs:.3f}s (~{period_samples}样本)")
@@ -186,6 +180,24 @@ def estimate_cycles(
             i = valleys.index(end)
         else:
             i += 1  # 找不到合适的结束谷值，跳过
+    if not cycles:
+        print("[signals] FFT引导谷值搜索失败，回退到时域峰谷匹配方法")
+        min_distance = max(int(min_cycle_seconds * sampling_rate), 1)
+        max_distance = max(int(max_cycle_seconds * sampling_rate), min_distance + 1)
+        candidate_peaks = detect_peaks(smooth, distance=min_distance)
+        candidate_valleys = detect_valleys(smooth, distance=min_distance)
+        candidate_valleys.sort()
+        valley_idx = 0
+        for peak in candidate_peaks:
+            while valley_idx < len(candidate_valleys) and candidate_valleys[valley_idx] < peak:
+                start = candidate_valleys[valley_idx]
+                valley_idx += 1
+                if valley_idx >= len(candidate_valleys):
+                    break
+                end = candidate_valleys[valley_idx]
+                if min_distance <= (end - start) <= max_distance:
+                    cycles.append((start, peak, end))
+                    break
     print(f"[signals] 找到 {len(cycles)} 个周期")
     return cycles
 

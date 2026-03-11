@@ -27,6 +27,7 @@ class UltrasoundMonitor:
         self.config = config
         self.roi_mask = roi_mask
         self.frames: List[MonitorFrame] = []
+        self.cached_feature_trace: Optional[np.ndarray] = None
         
         # 在 __init__ 中初始化 CNN 模型
         self.cnn = resnet18(pretrained=False)
@@ -54,6 +55,8 @@ class UltrasoundMonitor:
         data = np.load(npz_path)
         monitor = cls(config, roi_mask=roi_mask)
         monitor.record(data["frames"], data["timestamps"])
+        if "feature_trace" in data.files:
+            monitor.cached_feature_trace = np.asarray(data["feature_trace"], dtype=np.float32)
         print(f"[Monitor] 加载完成，共 {len(monitor.frames)} 帧")
         return monitor
     
@@ -76,6 +79,18 @@ class UltrasoundMonitor:
     def extract_feature_trace(self) -> List[FrameFeature]:  # 返回值是 FrameFeature 对象的列表，用于存储“时间戳 + 特征值”对
         """将帧序列映射为 Feature-Time 曲线。（把已缓存的所有监测帧转换成一条特征随时间变化的曲线）"""
         print(f"[Monitor] 开始提取特征轨迹，共 {len(self.frames)} 帧")
+        if self.cached_feature_trace is not None and len(self.cached_feature_trace) == len(self.frames):
+            print("[Monitor] 使用 NPZ 中缓存的 feature_trace")
+            features = [
+                FrameFeature(timestamp=frame.timestamp, value=float(value))
+                for frame, value in zip(self.frames, self.cached_feature_trace)
+            ]
+            for i, feature in enumerate(features):
+                if i < 24 or i == len(features) - 1:
+                    print(f"  帧{i} 时间戳{feature.timestamp} 特征值 {feature.value:.4f}")
+            print(f"[Monitor] 特征轨迹提取完成，共 {len(features)} 个点")
+            return features
+
         features: List[FrameFeature] = []
         for i, frame in enumerate(self.frames):
             value = self._compute_roi_feature(frame.image) #计算特征值

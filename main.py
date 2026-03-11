@@ -50,9 +50,10 @@ def main() -> None:
     
     print(f"相位体积数量: {len(output.phase_volumes)}")
     if output.phase_volumes:
-        print(f"  第一个相位体积形状: {output.phase_volumes[0].shape}")
-        print(f"  第一个相位体积唯一值: {np.unique(output.phase_volumes[0])}")
-        print(f"  第一个相位体积均值: {np.mean(output.phase_volumes[0]):.2f}, 标准差: {np.std(output.phase_volumes[0]):.2f}")
+        first_volume = output.phase_volumes[0].volume.intensities
+        print(f"  第一个相位体积形状: {first_volume.shape}")
+        print(f"  第一个相位体积唯一值: {np.unique(first_volume)}")
+        print(f"  第一个相位体积均值: {np.mean(first_volume):.2f}, 标准差: {np.std(first_volume):.2f}")
     
     print(f"验证报告平滑度得分: {output.validation_report.smoothness_score}")
     print(f"验证报告蠕动速度: {output.validation_report.peristalsis_velocity}")

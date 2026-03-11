@@ -1,0 +1,8 @@
+name: modeling_py310
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - opencv
+  - scipy
+  - numpy

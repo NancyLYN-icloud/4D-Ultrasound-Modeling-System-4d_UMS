@@ -14,7 +14,7 @@ class AcquisitionConfig:
     monitoring_fps: float = 30.0  # 监测阶段的 2D 帧率 (Hz)
     monitoring_duration: float = 60.0  # 监测阶段持续时间 (s)
     scan_duration: float = 180.0  # 自由臂扫描时长 (s)
-    assumed_cycle: float = 3.0  # 假设蠕动周期 (s)
+    assumed_cycle: float = 20.0  # 假设蠕动周期 (s)
     timestamp_precision_ms: float = 1.0  # 时间戳精度 (ms)
 
 
@@ -24,8 +24,8 @@ class PhaseDetectionConfig:
 
     smoothing_window: int = 9  # 奇数窗口长度
     smoothing_poly_order: int = 3  # Savitzky-Golay 多项式阶数
-    min_cycle_seconds: float = 2.0  # 最短周期 (s)
-    max_cycle_seconds: float = 8.0  # 最长周期 (s)
+    min_cycle_seconds: float = 10.0  # 最短周期 (s)
+    max_cycle_seconds: float = 30.0  # 最长周期 (s)
     bin_edges: Sequence[float] = tuple(np.linspace(0.0, 1.0, 11))
 
 
