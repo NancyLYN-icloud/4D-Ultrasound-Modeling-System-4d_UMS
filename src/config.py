@@ -15,7 +15,7 @@ class AcquisitionConfig:
     monitoring_duration: float = 60.0  # 监测阶段持续时间 (s)
     scan_duration: float = 180.0  # 自由臂扫描时长 (s)
     assumed_cycle: float = 20.0  # 假设蠕动周期 (s)
-    timestamp_precision_ms: float = 1.0  # 时间戳精度 (ms)
+    timestamp_precision_ms: float = 0.5  # 时间戳精度 (ms)
 
 
 @dataclass
@@ -26,7 +26,7 @@ class PhaseDetectionConfig:
     smoothing_poly_order: int = 3  # Savitzky-Golay 多项式阶数
     min_cycle_seconds: float = 10.0  # 最短周期 (s)
     max_cycle_seconds: float = 30.0  # 最长周期 (s)
-    phase_bin_step_seconds: float = 1  # 动态分箱时每个相位窗对应的时间宽度 (s)，相位窗变宽，每个相位的样本会增大
+    phase_bin_step_seconds: float = 0.5  # 动态分箱时每个相位窗对应的时间宽度 (s)，相位窗变宽，每个相位的样本会增大
     bin_edges: Sequence[float] = tuple(np.linspace(0.0, 1.0, 11))
 
 
