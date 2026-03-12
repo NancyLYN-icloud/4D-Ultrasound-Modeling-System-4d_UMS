@@ -182,25 +182,28 @@ def _wrapped_gaussian(x: float, center: float, sigma: float) -> float:
 
 
 def peristaltic_state(s: float, phase: float) -> tuple[float, float, float]:
-	lead_center = 0.12 + 0.74 * phase
-	trail_center = (lead_center - 0.21) % 1.0
-	lead = _wrapped_gaussian(s, lead_center, 0.065)
-	trail = _wrapped_gaussian(s, trail_center, 0.105)
-	distal_gain = 0.26 + 1.02 * (s ** 1.35)
-	contraction = 0.20 * distal_gain * lead + 0.06 * distal_gain * trail
-	axial_shift = 2.1 * lead - 0.7 * trail
-	roll_bias = 0.17 * lead - 0.05 * trail
-	return contraction, axial_shift, roll_bias
+	# Peristaltic wave starts around the gastric body middle and propagates toward the pylorus.
+	lead_center = 0.42 + 0.46 * phase
+	trail_center = max(0.20, lead_center - 0.16)
+	lead = _wrapped_gaussian(s, lead_center, 0.050)
+	trail = _wrapped_gaussian(s, trail_center, 0.085)
+	distal_gain = 0.90 + 0.45 * np.clip((s - 0.35) / 0.55, 0.0, 1.0)
+	relaxation = 0.14 * _wrapped_gaussian(s, max(0.10, lead_center - 0.28), 0.11)
+	contraction = np.clip((0.62 * lead + 0.24 * trail - relaxation) * distal_gain, 0.0, 0.82)
+	axial_shift = 6.5 * lead - 1.9 * trail
+	roll_bias = 0.26 * lead - 0.08 * trail
+	return float(contraction), float(axial_shift), float(roll_bias)
 
 
 def canonical_centerline(model: GastricReferenceModel, s: float, phase: float) -> np.ndarray:
 	x, cy, cz, _, _ = _interp_profile(model, s)
 	contraction, axial_shift, roll_bias = peristaltic_state(s, phase)
-	body_pull = 1.5 * contraction * math.exp(-((s - 0.58) / 0.23) ** 2)
+	body_pull = 4.8 * contraction * math.exp(-((s - 0.66) / 0.18) ** 2)
+	distal_tug = 2.2 * contraction * math.exp(-((s - 0.83) / 0.11) ** 2)
 	return np.array([
-		x + axial_shift,
-		cy + 2.4 * roll_bias,
-		cz - body_pull,
+		x + axial_shift + distal_tug,
+		cy + 4.0 * roll_bias,
+		cz - body_pull - 0.8 * distal_tug,
 	], dtype=np.float64)
 
 
@@ -251,11 +254,12 @@ def cross_section_polygon_mm(model: GastricReferenceModel, s: float, phase: floa
 	_, _, _, base_ry, base_rz = _interp_profile(model, s)
 	contraction, _, roll_bias = peristaltic_state(s, phase)
 
-	a = max(8.0, base_ry * (1.0 - 0.74 * contraction))
-	b = max(7.0, base_rz * (1.0 - 0.60 * contraction))
-	body_asym = 0.11 * math.exp(-((s - 0.40) / 0.22) ** 2)
-	antrum_notch = 0.24 * contraction + 0.05 * math.exp(-((s - 0.84) / 0.10) ** 2)
-	proximal_bulge = 0.09 * math.exp(-((s - 0.18) / 0.16) ** 2)
+	a = max(6.0, base_ry * (1.0 - 0.84 * contraction))
+	b = max(5.0, base_rz * (1.0 - 0.76 * contraction))
+	body_asym = 0.16 * math.exp(-((s - 0.48) / 0.18) ** 2)
+	antrum_notch = 0.38 * contraction + 0.10 * math.exp(-((s - 0.86) / 0.08) ** 2)
+	proximal_bulge = 0.11 * math.exp(-((s - 0.20) / 0.15) ** 2)
+	longitudinal_cleft = 0.12 * contraction * math.exp(-((s - 0.70) / 0.16) ** 2)
 
 	theta = np.linspace(0.0, 2.0 * math.pi, n_theta, endpoint=False)
 	denom = np.sqrt((np.cos(theta) / max(a, 1e-6)) ** 2 + (np.sin(theta) / max(b, 1e-6)) ** 2)
@@ -264,11 +268,13 @@ def cross_section_polygon_mm(model: GastricReferenceModel, s: float, phase: floa
 	radius *= 1.0 + body_asym * np.cos(2.0 * (theta - 0.32))
 	notch = antrum_notch * np.exp(-0.5 * ((np.angle(np.exp(1j * (theta - 0.10)))) / 0.40) ** 2)
 	radius *= 1.0 - notch
+	radius *= 1.0 - longitudinal_cleft * np.exp(-0.5 * ((np.angle(np.exp(1j * (theta - math.pi / 2.0)))) / 0.30) ** 2)
 
 	x = radius * np.cos(theta)
 	y = radius * np.sin(theta)
-	x += (0.08 * a * math.sin(2.0 * math.pi * s) + 0.10 * a * roll_bias) * (y / max(b, 1e-6)) ** 2
-	y += 0.08 * b * np.sin(theta + 0.6) * np.exp(-((s - 0.72) / 0.18) ** 2)
+	x += (0.14 * a * math.sin(2.0 * math.pi * s) + 0.18 * a * roll_bias) * (y / max(b, 1e-6)) ** 2
+	y += 0.14 * b * np.sin(theta + 0.6) * np.exp(-((s - 0.72) / 0.16) ** 2)
+	y -= 0.10 * b * contraction * np.exp(-0.5 * ((np.angle(np.exp(1j * (theta - 0.05)))) / 0.34) ** 2)
 	return np.column_stack([x, y]).astype(np.float64)
 
 
@@ -304,12 +310,12 @@ def translate_binary_frame(frame: np.ndarray, shift_x: int, shift_y: int) -> np.
 
 
 def sweep_coordinate(timestamp: float, gastric_period: float) -> float:
-	cycle_progress = timestamp / gastric_period
-	cycle_index = math.floor(cycle_progress)
-	phase = cycle_progress - cycle_index
-	base = 2.35 * phase + (cycle_index * GOLDEN_OFFSET)
-	base += 0.12 * math.sin(2.0 * math.pi * phase * 1.7 + 0.4)
-	base += 0.05 * math.sin(2.0 * math.pi * timestamp / 43.0)
+	# Keep the freehand sweep quasi-independent from gastric phase so each phase bin
+	# sees broad anatomical coverage after long-duration accumulation.
+	base = timestamp / 7.6
+	base += GOLDEN_OFFSET * (timestamp / gastric_period)
+	base += 0.09 * math.sin(2.0 * math.pi * timestamp / 31.0 + 0.4)
+	base += 0.04 * math.sin(2.0 * math.pi * timestamp / 13.0 - 0.2)
 	return float(np.clip(triangle_wave(np.array([base], dtype=np.float64))[0], 0.0, 1.0))
 
 

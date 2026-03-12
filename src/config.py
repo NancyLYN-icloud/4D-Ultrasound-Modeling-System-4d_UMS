@@ -81,6 +81,39 @@ class PointCloudConfig:
 
 
 @dataclass
+class SurfaceModelConfig:
+    """相位点云表面重建配置。"""
+
+    enabled: bool = True
+    out_subdir: str = "meshes"
+    voxel_size: float = 2.0
+    max_points: int = 4000
+    outlier_neighbors: int = 12
+    outlier_std_ratio: float = 2.0
+    normal_neighbors: int = 24
+    normal_offset_scale: float = 0.03
+    hidden_dim: int = 128
+    hidden_layers: int = 5
+    train_steps: int = 80
+    learning_rate: float = 0.001
+    surface_batch_size: int = 1024
+    eikonal_batch_size: int = 1024
+    surface_weight: float = 1.0
+    eikonal_weight: float = 0.08
+    normal_weight: float = 0.15
+    bbox_padding: float = 0.12
+    mesh_resolution: int = 56
+    mesh_threshold: float = 0.0
+    eval_batch_size: int = 24576
+    smoothing_iterations: int = 10
+    taubin_lambda: float = 0.33
+    taubin_mu: float = -0.34
+    min_face_count: int = 300
+    random_seed: int = 7
+    use_cuda_if_available: bool = True
+
+
+@dataclass
 class ValidationConfig:
     """模型验证需要的设置。"""
 
@@ -99,6 +132,7 @@ class PipelineConfig:
     interpolation: InterpolationConfig = field(default_factory=InterpolationConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     pointcloud: PointCloudConfig = field(default_factory=PointCloudConfig)
+    surface_model: SurfaceModelConfig = field(default_factory=SurfaceModelConfig)
 
 
 @dataclass

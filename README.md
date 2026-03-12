@@ -12,6 +12,7 @@
 - `src/reconstruction/reference.py`：根据样本最密集相位构建全局参考网格 `V_ref`。
 - `src/reconstruction/registration.py`：两级非刚性配准接口，优先使用 B 样条 (SimpleITK)，退化时回落到质心对齐。
 - `src/reconstruction/averaging.py`：基于 SNR 的体素加权平均，生成 `V_φ`。
+- `src/modeling/surface_reconstruction.py`：对每个相位点云执行 alpha-shape 表面重建、平滑与水密性检查，导出相位网格。
 - `src/modeling/interpolation.py`：对 `{V_φ}` 执行线性/周期三次样条插值，得到 `V(x,y,z,t)`。
 - `src/modeling/validation.py`：平滑度、周期抖动、腔体容积曲线等指标验证。
 - `src/pipelines/multicycle_reconstruction.py`：封装端到端流程并输出 `PipelineOutput`。

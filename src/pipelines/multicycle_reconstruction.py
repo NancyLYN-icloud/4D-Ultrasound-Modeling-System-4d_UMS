@@ -9,6 +9,7 @@ from ..config import PhaseVolume, PipelineConfig, TemporalModel, ValidationRepor
 from ..data_acquisition.monitor import UltrasoundMonitor
 from ..data_acquisition.free_arm_scan import FreeArmScanner
 from ..modeling.interpolation import TemporalInterpolator
+from ..modeling.surface_reconstruction import reconstruct_meshes_from_pointclouds
 from ..modeling.validation import ModelValidator
 from ..preprocessing.phase_detection import PhaseDetector
 from ..preprocessing.binning import PhaseBinner
@@ -66,6 +67,7 @@ class MulticycleReconstructionPipeline:
         
         # 3. 构建点云
         print("[Pipeline] 构建各相位点云")
+        written = []
         try:
             pc_cfg = self.config.pointcloud
             written = build_pointclouds_from_phase_bins(
@@ -76,6 +78,22 @@ class MulticycleReconstructionPipeline:
             print(f"[Pipeline] 点云文件位置: {pc_cfg.out_dir}")
         except Exception as e:
             print(f"[Pipeline] 点云导出失败: {e}")
+
+        # 3.1 基于各相位点云重建平滑水密网格
+        if self.config.surface_model.enabled and written:
+            print("[Pipeline] 构建各相位表面网格")
+            try:
+                meshes = reconstruct_meshes_from_pointclouds(
+                    written,
+                    config=self.config.surface_model,
+                )
+                mesh_dir = written[0].parent / self.config.surface_model.out_subdir
+                print(f"[Pipeline] 已导出 {len(meshes)} 个相位网格")
+                print(f"[Pipeline] 网格文件位置: {mesh_dir}")
+            except Exception as e:
+                print(f"[Pipeline] 相位网格重建失败: {e}")
+        elif self.config.surface_model.enabled:
+            print("[Pipeline] 未生成点云，跳过相位网格重建")
 
         # 4. 构建参考网格并执行配准
         print("[Pipeline] 构建参考网格")
