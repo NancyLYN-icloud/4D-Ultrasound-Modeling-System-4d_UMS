@@ -1,16 +1,27 @@
 """Generate scanner_sequence.npz from image folder.
-- Reads images from data/Datawithimage/images
+- Reads images from the external data root Datawithimage/images
 - Resizes to 512x512 float64
 - Builds timestamps from 0 to 180s across frames
 - Synthesizes positions (N,3) and orientations (N,3,3)
-- Saves data/raw/scanner_sequence.npz with keys: frames, timestamps, positions, orientations
+- Saves raw/scanner_sequence.npz with keys: frames, timestamps, positions, orientations
 """
+from __future__ import annotations
+
 from pathlib import Path
+import sys
+
 import numpy as np
 from PIL import Image
 
-SRC = Path("data/Datawithimage/images")
-OUT = Path("data/raw") / "scanner_sequence.npz"
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.paths import data_path
+
+SRC = data_path("Datawithimage", "images")
+OUT = data_path("raw", "scanner_sequence.npz")
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 files = sorted([p for p in SRC.iterdir() if p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.tif', '.tiff')])

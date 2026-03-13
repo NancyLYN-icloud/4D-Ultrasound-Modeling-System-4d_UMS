@@ -16,12 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import SurfaceModelConfig
+from src.paths import data_path
 from src.modeling.surface_reconstruction import reconstruct_meshes_from_pointclouds
 import scripts.regenerate_freehand_scanner_sequence as regen
 
 
-REFERENCE_PLY = ROOT / "data" / "test" / "stomach.ply"
-OUTPUT_BASE_DIR = ROOT / "data" / "test" / "processed"
+REFERENCE_PLY = data_path("test", "stomach.ply")
+OUTPUT_BASE_DIR = data_path("test", "simulation_mesh")
 OUTPUT_PREFIX = "phase_sequence_models_run"
 
 
@@ -58,22 +59,51 @@ def _read_reference_points(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarr
     return points, center, canonical
 
 
-def _phase_wave(s: np.ndarray, phase: float) -> tuple[np.ndarray, float, np.ndarray]:
-    wave_center = 0.40 + 0.48 * phase
-    lead = np.exp(-0.5 * ((s - wave_center) / 0.050) ** 2)
-    trail = np.exp(-0.5 * ((s - (wave_center - 0.12)) / 0.095) ** 2)
-    relax = np.exp(-0.5 * ((s - (wave_center - 0.24)) / 0.12) ** 2)
-    distal_gain = 0.55 + 0.80 * np.clip((s - 0.28) / 0.62, 0.0, 1.0)
-    proximal_gate = np.clip((s - 0.18) / 0.16, 0.0, 1.0)
-    pyloric_gate = 1.0 - 0.28 * np.exp(-0.5 * ((s - 0.94) / 0.05) ** 2)
-    contraction = np.clip((0.92 * lead + 0.34 * trail - 0.18 * relax) * distal_gain * proximal_gate * pyloric_gate, 0.0, 0.88)
-    return contraction.astype(np.float64), float(wave_center), lead.astype(np.float64)
+def _smoothstep(edge0: float, edge1: float, value: float | np.ndarray) -> float | np.ndarray:
+    span = max(edge1 - edge0, 1e-8)
+    t = np.clip((value - edge0) / span, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _phase_wave(
+    s: np.ndarray,
+    phase: float,
+) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, float]:
+    phase = float(phase % 1.0)
+
+    # One cycle: a contraction initiates in the gastric body, travels toward the pylorus,
+    # peaks distally, then fades back to the relaxed start shape.
+    travel = float(_smoothstep(0.02, 0.78, phase))
+    wave_center = 0.42 + 0.48 * travel
+    lead = np.exp(-0.5 * ((s - wave_center) / 0.052) ** 2)
+    trail = np.exp(-0.5 * ((s - (wave_center - 0.12)) / 0.105) ** 2)
+    recovery = np.exp(-0.5 * ((s - (wave_center - 0.25)) / 0.16) ** 2)
+
+    cycle_amp = float(np.sin(np.pi * phase) ** 1.15)
+    early_seed = np.exp(-0.5 * ((s - 0.44) / 0.085) ** 2)
+    distal_gain = 0.45 + 0.92 * np.clip((s - 0.30) / 0.60, 0.0, 1.0)
+    body_gate = _smoothstep(0.18, 0.34, s)
+    pylorus_focus = 0.88 + 0.18 * np.exp(-0.5 * ((s - 0.90) / 0.07) ** 2)
+
+    contraction = (
+        cycle_amp * (0.86 * lead + 0.34 * trail - 0.22 * recovery) * distal_gain * body_gate * pylorus_focus
+        + 0.09 * cycle_amp * early_seed
+    )
+    contraction = np.clip(contraction, 0.0, 0.84)
+    return (
+        contraction.astype(np.float64),
+        float(wave_center),
+        lead.astype(np.float64),
+        trail.astype(np.float64),
+        recovery.astype(np.float64),
+        cycle_amp,
+    )
 
 
 def _deform_reference_points(reference_points: np.ndarray, canonical_points: np.ndarray, model: regen.GastricReferenceModel, phase: float) -> tuple[np.ndarray, float, float]:
     axis = canonical_points[:, 0]
     s = (axis - axis.min()) / max(axis.max() - axis.min(), 1e-8)
-    contraction, wave_center, lead = _phase_wave(s, phase)
+    contraction, wave_center, lead, trail, recovery, cycle_amp = _phase_wave(s, phase)
 
     x_new = np.empty_like(axis)
     y_new = np.empty_like(axis)
@@ -83,7 +113,6 @@ def _deform_reference_points(reference_points: np.ndarray, canonical_points: np.
     for idx in range(reference_points.shape[0]):
         si = float(s[idx])
         x0, cy0, cz0, ry0, rz0 = regen._interp_profile(model, si)
-        centerline = regen.canonical_centerline(model, si, phase)
         dy = canonical_points[idx, 1] - cy0
         dz = canonical_points[idx, 2] - cz0
 
@@ -91,18 +120,26 @@ def _deform_reference_points(reference_points: np.ndarray, canonical_points: np.
         rz_safe = max(rz0, 1e-6)
         theta = math.atan2(dz / rz_safe, dy / ry_safe)
 
-        ring_scale_y = 1.0 - 0.58 * contraction[idx]
-        ring_scale_z = 1.0 - 0.52 * contraction[idx]
-        circum_bias = 1.0 - 0.10 * contraction[idx] * math.cos(2.0 * (theta - 0.10))
-        distal_pull = 5.6 * contraction[idx] * math.exp(-((si - 0.82) / 0.10) ** 2)
-        pyloric_taper = 1.0 - 0.10 * math.exp(-((si - 0.93) / 0.05) ** 2)
-        body_sag = 2.1 * contraction[idx] * math.exp(-((si - 0.62) / 0.19) ** 2)
-        lumen_shift = 0.10 * contraction[idx] * rz_safe * math.sin(theta - 0.08)
-        forward_push = 1.4 * lead[idx] * (0.35 + si)
+        ring_scale_y = 1.0 - (0.50 + 0.07 * si) * contraction[idx]
+        ring_scale_z = 1.0 - (0.46 + 0.05 * si) * contraction[idx]
+        circum_bias = 1.0 - 0.12 * contraction[idx] * math.cos(2.0 * (theta - 0.08))
+        pyloric_taper = 1.0 - 0.14 * math.exp(-((si - 0.95) / 0.045) ** 2) * (0.3 + 0.7 * cycle_amp)
 
-        x_new[idx] = centerline[0] + distal_pull + forward_push * (0.25 + abs(math.cos(theta)))
-        y_new[idx] = centerline[1] + dy * ring_scale_y * circum_bias * pyloric_taper
-        z_new[idx] = centerline[2] + dz * ring_scale_z * circum_bias - body_sag + lumen_shift
+        axial_shift = 1.2 * cycle_amp * lead[idx] + 2.4 * contraction[idx] * math.exp(-((si - 0.79) / 0.15) ** 2)
+        distal_pull = 6.4 * contraction[idx] * math.exp(-((si - 0.87) / 0.08) ** 2)
+        body_sag = 2.8 * contraction[idx] * math.exp(-((si - 0.63) / 0.19) ** 2)
+        recovery_lift = 0.9 * recovery[idx] * (1.0 - cycle_amp)
+        lumen_shift = 0.11 * contraction[idx] * rz_safe * math.sin(theta - 0.06)
+        wall_push = (0.45 * lead[idx] + 0.22 * trail[idx]) * cycle_amp * (0.25 + abs(math.cos(theta)))
+        center_y_shift = 0.65 * cycle_amp * (lead[idx] - 0.55 * trail[idx])
+
+        center_x = x0 + axial_shift + distal_pull
+        center_y = cy0 + center_y_shift
+        center_z = cz0 - body_sag + recovery_lift
+
+        x_new[idx] = center_x + wall_push
+        y_new[idx] = center_y + dy * ring_scale_y * circum_bias * pyloric_taper
+        z_new[idx] = center_z + dz * ring_scale_z * circum_bias - 0.18 * distal_pull + lumen_shift
 
     canonical_deformed = np.column_stack([x_new, y_new, z_new])
     world_deformed = model.world_center + (model.world_basis @ canonical_deformed.T).T
@@ -126,6 +163,12 @@ def _write_pointcloud_ply(points: np.ndarray, out_path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a gastric peristaltic phase-sequence model set")
     parser.add_argument("--phase-count", type=int, default=41, help="Number of phase models to generate across one cycle")
+    parser.add_argument(
+        "--output-base-dir",
+        type=str,
+        default=str(OUTPUT_BASE_DIR),
+        help="Directory where the generated phase-sequence model run folder will be created",
+    )
     args = parser.parse_args()
 
     if not REFERENCE_PLY.exists():
@@ -133,7 +176,8 @@ def main() -> None:
     if args.phase_count < 2:
         raise ValueError("phase-count must be at least 2")
 
-    run_dir, run_id = _create_indexed_output_dir(OUTPUT_BASE_DIR, OUTPUT_PREFIX)
+    output_base_dir = Path(args.output_base_dir)
+    run_dir, run_id = _create_indexed_output_dir(output_base_dir, OUTPUT_PREFIX)
     points_dir = run_dir / "pointclouds"
     points_dir.mkdir(parents=True, exist_ok=True)
 

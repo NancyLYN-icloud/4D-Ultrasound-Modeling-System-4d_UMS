@@ -6,6 +6,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .paths import data_path
+
 
 @dataclass
 class AcquisitionConfig:
@@ -77,7 +79,7 @@ class PointCloudConfig:
     sample_spacing: float = 2.0
     max_points_per_phase: int | None = 200000
     # 点云输出基础目录（每次运行会在该目录下自动新建一个带序号的子文件夹）
-    out_dir: str = "data/test/processed"
+    out_dir: str = field(default_factory=lambda: str(data_path("test", "processed")))
 
 
 @dataclass

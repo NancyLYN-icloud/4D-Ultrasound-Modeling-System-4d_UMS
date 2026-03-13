@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 import math
+import sys
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_DIR = ROOT / "data" / "test" / "image"
-OUT_DIR = ROOT / "data" / "test" / "preview"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.paths import data_path
+
+
+TEST_DIR = data_path("test", "image")
+OUT_DIR = data_path("test", "preview")
 
 
 def build_montage(source_dir: Path, out_path: Path, *, rows: int, cols: int, thumb_size: tuple[int, int], title: str) -> None:

@@ -16,12 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.regenerate_freehand_scanner_sequence as regen
+from src.paths import data_path
 
 
-TEST_SCANNER_PATH = ROOT / "data" / "test" / "scanner_sequence.npz"
-TEST_MONITOR_PATH = ROOT / "data" / "test" / "monitor_stream.npz"
-RAW_MONITOR_PATH = ROOT / "data" / "raw" / "monitor_stream.npz"
-SCANNER_IMG_DIR = ROOT / "data" / "test" / "image" / "scanner"
+TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
+TEST_MONITOR_PATH = data_path("test", "monitor_stream.npz")
+RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
+SCANNER_IMG_DIR = data_path("test", "image", "scanner")
 PHASE_MODEL_PREFIX = "phase_sequence_models_run_"
 FRAME_SIZE = 512
 PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
@@ -29,7 +30,7 @@ PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
 
 def _latest_phase_model_dir() -> Path:
     candidates = sorted(
-        [path for path in (ROOT / "data" / "test" / "processed").iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)]
+        [path for path in data_path("test", "processed").iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)]
     )
     if not candidates:
         raise FileNotFoundError("No phase_sequence_models_run_* directory found")
@@ -153,7 +154,7 @@ def generate_from_phase_models(phase_model_dir: Path, rewrite_pngs: bool = True)
 
     monitor_path = TEST_MONITOR_PATH if TEST_MONITOR_PATH.exists() else RAW_MONITOR_PATH
     gastric_period = regen.detect_monitor_period(monitor_path)
-    reference_model = regen.load_reference_model(ROOT / "data" / "test" / "stomach.ply")
+    reference_model = regen.load_reference_model(data_path("test", "stomach.ply"))
 
     frame_count = len(timestamps)
     frames = np.zeros((frame_count, FRAME_SIZE, FRAME_SIZE), dtype=np.float32)

@@ -14,11 +14,12 @@ if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
 from src.config import FrameFeature, PipelineConfig
+from src.paths import data_path
 from src.preprocessing.phase_detection import PhaseDetector
 
 
-OUT_DIR = ROOT / "data" / "test"
-RAW_OUT_DIR = ROOT / "data" / "raw"
+OUT_DIR = data_path("test")
+RAW_OUT_DIR = data_path("raw")
 SCANNER_IMG_DIR = OUT_DIR / "image" / "scanner"
 REFERENCE_PLY = OUT_DIR / "stomach.ply"
 MONITOR_STREAM = RAW_OUT_DIR / "monitor_stream.npz"

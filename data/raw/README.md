@@ -1,4 +1,4 @@
-# data/raw 输入示例
+# raw 输入示例
 
 | 文件 | 内容 | 结构 |
 | --- | --- | --- |
@@ -14,11 +14,12 @@ import numpy as np
 from src.data_acquisition.monitor import UltrasoundMonitor
 from src.data_acquisition.free_arm_scan import FreeArmScanner
 from src.config import PipelineConfig
+from src.paths import data_path
 
 config = PipelineConfig()
-monitor = UltrasoundMonitor.from_npz(config.acquisition, "data/raw/monitor_stream.npz")
+monitor = UltrasoundMonitor.from_npz(config.acquisition, str(data_path("raw", "monitor_stream.npz")))
 
-scanner = FreeArmScanner.from_npz(config.acquisition, "data/raw/scanner_sequence.npz")
+scanner = FreeArmScanner.from_npz(config.acquisition, str(data_path("raw", "scanner_sequence.npz")))
 ```
 
 之后即可将 `monitor` 与 `scanner` 交给 `MulticycleReconstructionPipeline.run()`，验证端到端流程。

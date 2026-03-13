@@ -16,10 +16,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.regenerate_freehand_scanner_sequence as regen
+from src.paths import data_path
 
-TEST_SCANNER_PATH = ROOT / "data" / "test" / "scanner_sequence.npz"
-RAW_MONITOR_PATH = ROOT / "data" / "raw" / "monitor_stream.npz"
-REFERENCE_PLY = ROOT / "data" / "test" / "stomach.ply"
+TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
+RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
+REFERENCE_PLY = data_path("test", "stomach.ply")
 
 
 def build_segment(
@@ -78,7 +79,7 @@ def build_extra_segment(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Extend data/test/scanner_sequence.npz to a longer duration")
+    parser = argparse.ArgumentParser(description="Extend the test scanner_sequence.npz in the external data root to a longer duration")
     parser.add_argument("--target-duration", type=float, default=900.0, help="Target duration in seconds")
     parser.add_argument(
         "--rewrite-all",

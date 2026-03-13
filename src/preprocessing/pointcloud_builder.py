@@ -3,7 +3,7 @@
 功能：
 - 遍历每个 `PhaseBin`，对其中的 `ScanSample.volume_slice` 提取高强度体素点
 - 将体素坐标映射到世界坐标（使用 `ScanSample.position` 和 `ScanSample.orientation`）
-- 对每个相位输出一个 PLY 文件：`data/processed/phase_pointclouds/phase_{idx}_{center:.2f}.ply`
+- 对每个相位输出一个 PLY 文件到配置指定的数据目录下
 
 该实现参考 `proprecess/ultrasound_to_pointcloud.py` 的思路，但针对项目内 `ScanSample` 数据结构进行简化和适配。
 """

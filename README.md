@@ -24,6 +24,8 @@
 python main.py
 ```
 
+默认外部数据根目录为 `/home/liuyanan/data/Research_Data/4D-UMS`。如需切换位置，可设置环境变量 `UMS_DATA_ROOT`。
+
 默认配置使用仿真数据，因此无需外部输入即可产出代表性结果。若需对接真实设备，可将：
 
 - 高帧率监测阶段的 ROI 图像和时间戳输入 `UltrasoundMonitor.record`；

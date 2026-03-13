@@ -14,14 +14,15 @@ if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
 from src.config import FrameFeature, PipelineConfig
+from src.paths import data_path
 from src.preprocessing.phase_detection import PhaseDetector
 
 
-RAW_MONITOR_PATH = ROOT / "data" / "raw" / "monitor_stream.npz"
-RAW_SCANNER_PATH = ROOT / "data" / "raw" / "scanner_sequence.npz"
-TEST_SCANNER_PATH = ROOT / "data" / "test" / "scanner_sequence.npz"
-SCANNER_IMG_DIR = ROOT / "data" / "test" / "image" / "scanner"
-REFERENCE_PLY = ROOT / "data" / "test" / "stomach.ply"
+RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
+RAW_SCANNER_PATH = data_path("raw", "scanner_sequence.npz")
+TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
+SCANNER_IMG_DIR = data_path("test", "image", "scanner")
+REFERENCE_PLY = data_path("test", "stomach.ply")
 
 SCANNER_DURATION = 240.0
 SCANNER_FRAMES = 720

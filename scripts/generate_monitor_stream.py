@@ -8,14 +8,21 @@ clear peristaltic cycles over the sequence.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import numpy as np
 from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_NPZ = ROOT / "data" / "test" / "monitor_stream.npz"
-OUT_IMG_DIR = ROOT / "data" / "test" / "image" / "monitor"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.paths import data_path
+
+
+OUT_NPZ = data_path("test", "monitor_stream.npz")
+OUT_IMG_DIR = data_path("test", "image", "monitor")
 
 IMAGE_SIZE = 64
 DURATION_SECONDS = 60.0
