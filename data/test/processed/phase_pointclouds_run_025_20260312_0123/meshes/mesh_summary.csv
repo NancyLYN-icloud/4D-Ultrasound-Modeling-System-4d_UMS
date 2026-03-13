@@ -1,2 +1,0 @@
-phase_pointcloud,mesh,input_points,sampled_points,vertices,faces,watertight,method
-run_025_phase_000_0.024.ply,run_025_phase_000_0.024_mesh.ply,32966,4000,6178,12352,1,neuralgf_implicit
