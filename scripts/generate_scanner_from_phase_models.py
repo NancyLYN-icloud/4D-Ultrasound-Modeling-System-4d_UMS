@@ -4,6 +4,7 @@ import argparse
 import csv
 from pathlib import Path
 import sys
+import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -24,17 +25,44 @@ TEST_MONITOR_PATH = data_path("test", "monitor_stream.npz")
 RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
 SCANNER_IMG_DIR = data_path("test", "image", "scanner")
 PHASE_MODEL_PREFIX = "phase_sequence_models_run_"
+PHASE_MODEL_BASE_DIR = data_path("simulation_mesh")
 FRAME_SIZE = 512
 PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
 
 
 def _latest_phase_model_dir() -> Path:
-    candidates = sorted(
-        [path for path in data_path("test", "processed").iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)]
-    )
+    candidates = sorted([path for path in PHASE_MODEL_BASE_DIR.iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)])
     if not candidates:
         raise FileNotFoundError("No phase_sequence_models_run_* directory found")
     return candidates[-1]
+
+
+def _load_observation_transform(phase_model_dir: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    transform_path = phase_model_dir / "observation_transform.npz"
+    if not transform_path.exists():
+        return None
+    with np.load(transform_path) as data:
+        center = data["center"].astype(np.float64)
+        rotation = data["rotation"].astype(np.float64)
+    return center, rotation
+
+
+def _apply_pose_transform(
+    position: np.ndarray,
+    orientation: np.ndarray,
+    transform: tuple[np.ndarray, np.ndarray] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if transform is None:
+        return position, orientation
+    center, rotation = transform
+    position_out = center + rotation @ (position - center)
+    orientation_out = rotation @ orientation
+    return position_out.astype(np.float64), orientation_out.astype(np.float64)
+
+
+def _build_timestamps(duration_seconds: float, fps: float) -> np.ndarray:
+    frame_count = max(1, int(round(duration_seconds * fps)))
+    return (np.arange(frame_count, dtype=np.float64) / fps).astype(np.float64)
 
 
 def _read_phase_summary(summary_path: Path) -> tuple[np.ndarray, list[Path]]:
@@ -144,49 +172,76 @@ def _save_png(frame: np.ndarray, path: Path) -> None:
     Image.fromarray((np.clip(frame, 0.0, 1.0) * 255.0).astype(np.uint8), mode="L").save(path)
 
 
-def generate_from_phase_models(phase_model_dir: Path, rewrite_pngs: bool = True) -> None:
+def generate_from_phase_models(
+    phase_model_dir: Path,
+    rewrite_pngs: bool = True,
+    fps: float | None = None,
+    duration_seconds: float | None = None,
+) -> None:
     summary_path = phase_model_dir / "phase_sequence_summary.csv"
     phase_values, mesh_paths = _read_phase_summary(summary_path)
     meshes = _load_meshes(mesh_paths)
 
-    with np.load(TEST_SCANNER_PATH) as data:
-        timestamps = data["timestamps"].copy().astype(np.float64)
+    if fps is None or duration_seconds is None:
+        with np.load(TEST_SCANNER_PATH) as data:
+            timestamps = data["timestamps"].copy().astype(np.float64)
+    else:
+        timestamps = _build_timestamps(duration_seconds=duration_seconds, fps=fps)
 
     monitor_path = TEST_MONITOR_PATH if TEST_MONITOR_PATH.exists() else RAW_MONITOR_PATH
     gastric_period = regen.detect_monitor_period(monitor_path)
     reference_model = regen.load_reference_model(data_path("test", "stomach.ply"))
+    observation_transform = _load_observation_transform(phase_model_dir)
 
     frame_count = len(timestamps)
-    frames = np.zeros((frame_count, FRAME_SIZE, FRAME_SIZE), dtype=np.float32)
     positions = np.zeros((frame_count, 3), dtype=np.float64)
     orientations = np.zeros((frame_count, 3, 3), dtype=np.float64)
 
     if rewrite_pngs:
         _clear_scanner_pngs(SCANNER_IMG_DIR)
 
-    for index, timestamp in enumerate(timestamps):
-        phase = float((timestamp % gastric_period) / gastric_period)
-        phase_index = _nearest_phase_index(phase_values, phase)
-        sweep_position = regen.sweep_coordinate(float(timestamp), gastric_period)
-        positions[index] = regen.world_centerline(reference_model, sweep_position, phase)
-        orientations[index] = regen.probe_orientation(reference_model, sweep_position, phase, float(timestamp))
-        frames[index] = _slice_mesh_frame(meshes[phase_index], positions[index], orientations[index], float(timestamp), phase)
-        if rewrite_pngs:
-            _save_png(frames[index], SCANNER_IMG_DIR / f"scanner_{index:04d}.png")
-        if index < 5 or index % 400 == 0 or index == frame_count - 1:
-            print(
-                f"[ScannerFromPhaseModels] frame={index:04d}/{frame_count - 1} "
-                f"ts={timestamp:.3f}s phase={phase:.3f} mesh_phase={phase_values[phase_index]:.3f}"
-            )
+    with tempfile.TemporaryDirectory(prefix="scanner_phase_frames_", dir=str(TEST_SCANNER_PATH.parent)) as tmp_dir:
+        frames_path = Path(tmp_dir) / "frames.npy"
+        frames = np.lib.format.open_memmap(
+            frames_path,
+            mode="w+",
+            dtype=np.uint8,
+            shape=(frame_count, FRAME_SIZE, FRAME_SIZE),
+        )
 
-    tmp_path = TEST_SCANNER_PATH.with_name(TEST_SCANNER_PATH.stem + ".tmp.npz")
-    np.savez_compressed(
-        tmp_path,
-        frames=frames.astype(np.float32),
-        timestamps=timestamps.astype(np.float64),
-        positions=positions.astype(np.float64),
-        orientations=orientations.astype(np.float64),
-    )
+        for index, timestamp in enumerate(timestamps):
+            phase = float((timestamp % gastric_period) / gastric_period)
+            phase_index = _nearest_phase_index(phase_values, phase)
+            sweep_position = regen.sweep_coordinate(float(timestamp), gastric_period)
+            position = regen.world_centerline(reference_model, sweep_position, phase)
+            orientation = regen.probe_orientation(reference_model, sweep_position, phase, float(timestamp))
+            position, orientation = _apply_pose_transform(position, orientation, observation_transform)
+
+            frame_float = _slice_mesh_frame(meshes[phase_index], position, orientation, float(timestamp), phase)
+            frame_uint8 = (np.clip(frame_float, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+            positions[index] = position
+            orientations[index] = orientation
+            frames[index] = frame_uint8
+
+            if rewrite_pngs:
+                Image.fromarray(frame_uint8, mode="L").save(SCANNER_IMG_DIR / f"scanner_{index:04d}.png")
+            if index < 5 or index % 1000 == 0 or index == frame_count - 1:
+                print(
+                    f"[ScannerFromPhaseModels] frame={index:05d}/{frame_count - 1} "
+                    f"ts={timestamp:.3f}s phase={phase:.3f} mesh_phase={phase_values[phase_index]:.3f}"
+                )
+
+        frames.flush()
+        tmp_path = TEST_SCANNER_PATH.with_name(TEST_SCANNER_PATH.stem + ".tmp.npz")
+        np.savez_compressed(
+            tmp_path,
+            frames=frames,
+            timestamps=timestamps.astype(np.float64),
+            positions=positions.astype(np.float64),
+            orientations=orientations.astype(np.float64),
+        )
+
     tmp_final = tmp_path if tmp_path.suffix == ".npz" else tmp_path.with_suffix(".npz")
     final_tmp = tmp_final if tmp_final.exists() else tmp_path
     final_tmp.replace(TEST_SCANNER_PATH)
@@ -196,6 +251,9 @@ def generate_from_phase_models(phase_model_dir: Path, rewrite_pngs: bool = True)
     print(f"[ScannerFromPhaseModels] Monitor path: {monitor_path}")
     print(f"[ScannerFromPhaseModels] Gastric period: {gastric_period:.6f}s")
     print(f"[ScannerFromPhaseModels] Frames: {len(frames)}")
+    if fps is not None and duration_seconds is not None:
+        print(f"[ScannerFromPhaseModels] FPS: {fps:.6f}")
+        print(f"[ScannerFromPhaseModels] Duration: {duration_seconds:.6f}s")
     print(f"[ScannerFromPhaseModels] PNG dir: {SCANNER_IMG_DIR}")
 
 
@@ -203,12 +261,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Regenerate test scanner_sequence.npz from phase-sequence stomach models")
     parser.add_argument("--phase-model-dir", type=str, default="", help="Specific phase_sequence_models_run directory to use")
     parser.add_argument("--no-png", action="store_true", help="Do not rewrite scanner PNG images")
+    parser.add_argument("--fps", type=float, default=None, help="Output scanner frame rate in Hz")
+    parser.add_argument("--duration-seconds", type=float, default=None, help="Output scanner duration in seconds")
     args = parser.parse_args()
 
     phase_model_dir = Path(args.phase_model_dir) if args.phase_model_dir else _latest_phase_model_dir()
     if not phase_model_dir.exists():
         raise FileNotFoundError(f"Phase model directory not found: {phase_model_dir}")
-    generate_from_phase_models(phase_model_dir=phase_model_dir, rewrite_pngs=not args.no_png)
+    if (args.fps is None) != (args.duration_seconds is None):
+        raise ValueError("--fps and --duration-seconds must be provided together")
+    generate_from_phase_models(
+        phase_model_dir=phase_model_dir,
+        rewrite_pngs=not args.no_png,
+        fps=args.fps,
+        duration_seconds=args.duration_seconds,
+    )
 
 
 if __name__ == "__main__":

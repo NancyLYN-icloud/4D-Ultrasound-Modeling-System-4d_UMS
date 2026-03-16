@@ -86,6 +86,7 @@ class MulticycleReconstructionPipeline:
                 meshes = reconstruct_meshes_from_pointclouds(
                     written,
                     config=self.config.surface_model,
+                    phase_bin_step_seconds=self.config.phase_detection.phase_bin_step_seconds,
                 )
                 mesh_dir = written[0].parent / self.config.surface_model.out_subdir
                 print(f"[Pipeline] 已导出 {len(meshes)} 个相位网格")

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import csv
+import re
 
 import mcubes
 import numpy as np
@@ -20,12 +21,23 @@ from ..config import SurfaceModelConfig
 class MeshBuildResult:
     pointcloud_path: Path
     mesh_path: Path
+    timestamp_s: float | None
     input_points: int
     sampled_points: int
     vertices: int
     faces: int
     watertight: bool
     method: str
+
+
+_PHASE_INDEX_PATTERN = re.compile(r"_phase_(\d+)_")
+
+
+def _phase_index_from_path(path: Path) -> int | None:
+    match = _PHASE_INDEX_PATTERN.search(path.name)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _read_xyz_ply(path: Path) -> np.ndarray:
@@ -187,6 +199,9 @@ class NeuralGFSurfaceReconstructor:
     def _train_field(self, points: np.ndarray, normals: np.ndarray) -> NeuralGradientField:
         cfg = self.config
         rng = np.random.default_rng(cfg.random_seed)
+        torch.manual_seed(cfg.random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(cfg.random_seed)
         network = NeuralGradientField(cfg.hidden_dim, cfg.hidden_layers).to(self.device)
         optimizer = torch.optim.Adam(network.parameters(), lr=cfg.learning_rate)
 
@@ -299,6 +314,7 @@ class NeuralGFSurfaceReconstructor:
 def reconstruct_meshes_from_pointclouds(
     pointcloud_paths: list[Path],
     config: SurfaceModelConfig | None = None,
+    phase_bin_step_seconds: float | None = None,
 ) -> list[MeshBuildResult]:
     cfg = config or SurfaceModelConfig()
     if not pointcloud_paths:
@@ -316,6 +332,8 @@ def reconstruct_meshes_from_pointclouds(
             print(f"[Surface] 跳过空点云: {pointcloud_path.name}")
             continue
 
+        phase_index = _phase_index_from_path(pointcloud_path)
+
         mesh, stats = reconstructor.reconstruct(points)
         if int(stats["faces"]) < cfg.min_face_count:
             print(f"[Surface] {pointcloud_path.name}: 面片数过少 ({stats['faces']})，跳过导出")
@@ -331,6 +349,11 @@ def reconstruct_meshes_from_pointclouds(
             MeshBuildResult(
                 pointcloud_path=pointcloud_path,
                 mesh_path=mesh_path,
+                timestamp_s=(
+                    None
+                    if phase_bin_step_seconds is None or phase_index is None
+                    else float(phase_index * phase_bin_step_seconds)
+                ),
                 input_points=int(stats["input_points"]),
                 sampled_points=int(stats["sampled_points"]),
                 vertices=int(stats["vertices"]),
@@ -343,11 +366,12 @@ def reconstruct_meshes_from_pointclouds(
     summary_path = mesh_dir / "mesh_summary.csv"
     with summary_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["phase_pointcloud", "mesh", "input_points", "sampled_points", "vertices", "faces", "watertight", "method"])
+        writer.writerow(["phase_pointcloud", "timestamp_s", "mesh", "input_points", "sampled_points", "vertices", "faces", "watertight", "method"])
         for result in results:
             writer.writerow(
                 [
                     result.pointcloud_path.name,
+                    "" if result.timestamp_s is None else f"{result.timestamp_s:.6f}",
                     result.mesh_path.name,
                     result.input_points,
                     result.sampled_points,
