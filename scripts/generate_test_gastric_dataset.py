@@ -13,19 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
-from src.config import FrameFeature, PipelineConfig
+from src.config import CycleInfo, FrameFeature, PipelineConfig
 from src.paths import data_path
+from src.preprocessing.phase_canonicalization import NonlinearPhaseCanonicalizer
 from src.preprocessing.phase_detection import PhaseDetector
 
 
 OUT_DIR = data_path("test")
-RAW_OUT_DIR = data_path("raw")
+RAW_OUT_DIR = OUT_DIR
 SCANNER_IMG_DIR = OUT_DIR / "image" / "scanner"
 REFERENCE_PLY = OUT_DIR / "stomach.ply"
-MONITOR_STREAM = RAW_OUT_DIR / "monitor_stream.npz"
+MONITOR_STREAM = OUT_DIR / "monitor_stream.npz"
 
-SCANNER_DURATION = 240.0
-SCANNER_FRAMES = 720
+SCANNER_DURATION = 900.0
+SCANNER_FPS = 10.0
+SCANNER_FRAMES = int(SCANNER_DURATION * SCANNER_FPS)
 SWEEP_PERIOD = 5.7
 SCANNER_SIZE = 512
 SEED = 20260309
@@ -65,6 +67,69 @@ def detect_monitor_period(monitor_stream: Path) -> float:
 		raise RuntimeError("No gastric cycles detected from monitor stream")
 	durations = np.asarray([cycle.duration for cycle in cycles], dtype=np.float64)
 	return float(np.mean(durations))
+
+
+def detect_monitor_cycles(monitor_stream: Path) -> list[CycleInfo]:
+	if not monitor_stream.exists():
+		raise FileNotFoundError(f"Monitor stream not found: {monitor_stream}")
+	data = np.load(monitor_stream)
+	timestamps = data["timestamps"]
+	feature_trace = data["feature_trace"]
+	features = [
+		FrameFeature(timestamp=float(ts), value=float(value))
+		for ts, value in zip(timestamps, feature_trace)
+	]
+	cycles = PhaseDetector(PipelineConfig().phase_detection).detect_cycles(features)
+	if not cycles:
+		raise RuntimeError("No gastric cycles detected from monitor stream")
+	return cycles
+
+
+def build_scanner_cycle_schedule(reference_cycles: list[CycleInfo], scan_duration: float) -> tuple[list[CycleInfo], float]:
+	canonicalizer = NonlinearPhaseCanonicalizer(PipelineConfig().phase_canonicalization)
+	target_peak_phase = canonicalizer.estimate_target_peak_phase(reference_cycles)
+	reference_peak_phases = [
+		(float(cycle.peak_time) - float(cycle.start_time)) / max(float(cycle.duration), 1e-8)
+		for cycle in reference_cycles
+	]
+	reference_durations = [float(cycle.duration) for cycle in reference_cycles]
+
+	cycles: list[CycleInfo] = []
+	start_time = 0.0
+	index = 0
+	while start_time < scan_duration + max(reference_durations):
+		duration = reference_durations[index % len(reference_durations)]
+		peak_phase = reference_peak_phases[index % len(reference_peak_phases)]
+		end_time = start_time + duration
+		peak_time = start_time + duration * peak_phase
+		cycles.append(CycleInfo(index=index, start_time=start_time, peak_time=peak_time, end_time=end_time))
+		start_time = end_time
+		index += 1
+
+	return cycles, target_peak_phase
+
+
+def schedule_phase(timestamp: float, schedule: list[CycleInfo], target_peak_phase: float) -> float:
+	if not schedule:
+		raise ValueError("schedule must not be empty")
+
+	cycle_index = 0
+	while cycle_index < len(schedule) and timestamp > schedule[cycle_index].end_time:
+		cycle_index += 1
+	if cycle_index >= len(schedule):
+		cycle_index = len(schedule) - 1
+
+	cycle = schedule[cycle_index]
+	duration = max(float(cycle.duration), 1e-8)
+	linear_phase = float(np.clip((timestamp - float(cycle.start_time)) / duration, 0.0, 1.0))
+	source_peak_phase = (float(cycle.peak_time) - float(cycle.start_time)) / duration
+	return float(
+		NonlinearPhaseCanonicalizer._piecewise_warp(
+			linear_phase,
+			source_peak=float(source_peak_phase),
+			target_peak=float(target_peak_phase),
+		)
+	)
 
 
 def save_png(image: np.ndarray, path: Path) -> None:
@@ -319,14 +384,19 @@ def translate_binary_frame(frame: np.ndarray, shift_x: int, shift_y: int) -> np.
 	return translated
 
 
-def generate_scanner_stream(model: GastricReferenceModel, gastric_period: float) -> None:
-	timestamps = np.linspace(0.0, SCANNER_DURATION, SCANNER_FRAMES, dtype=np.float64)
+def generate_scanner_stream(
+	model: GastricReferenceModel,
+	gastric_period: float,
+	cycle_schedule: list[CycleInfo],
+	target_peak_phase: float,
+) -> None:
+	timestamps = np.arange(SCANNER_FRAMES, dtype=np.float64) / SCANNER_FPS
 	frames = np.zeros((SCANNER_FRAMES, SCANNER_SIZE, SCANNER_SIZE), dtype=np.float32)
 	positions = np.zeros((SCANNER_FRAMES, 3), dtype=np.float64)
 	orientations = np.zeros((SCANNER_FRAMES, 3, 3), dtype=np.float64)
 
 	for idx, t in enumerate(timestamps):
-		phase = float((t % gastric_period) / gastric_period)
+		phase = schedule_phase(float(t), cycle_schedule, target_peak_phase)
 		s = sweep_coordinate(float(t), gastric_period)
 		positions[idx] = world_centerline(model, s, phase)
 		orientations[idx] = probe_orientation(model, s, phase, float(t))
@@ -369,13 +439,21 @@ def clear_existing_scanner_pngs() -> None:
 def main() -> None:
 	if not REFERENCE_PLY.exists():
 		raise FileNotFoundError(f"Reference stomach point cloud not found: {REFERENCE_PLY}")
-	gastric_period = detect_monitor_period(MONITOR_STREAM)
+	reference_cycles = detect_monitor_cycles(MONITOR_STREAM)
+	gastric_period = float(np.mean([cycle.duration for cycle in reference_cycles]))
+	cycle_schedule, target_peak_phase = build_scanner_cycle_schedule(reference_cycles, SCANNER_DURATION)
 	clear_existing_scanner_pngs()
 	model = load_reference_model(REFERENCE_PLY)
-	generate_scanner_stream(model, gastric_period)
+	generate_scanner_stream(model, gastric_period, cycle_schedule, target_peak_phase)
 	print(f"Detected gastric period from monitor stream: {gastric_period:.6f}s")
-	print(f"Generated scanner data at {RAW_OUT_DIR / 'scanner_sequence.npz'}")
-	print(f"Mirror copy written to {OUT_DIR / 'scanner_sequence.npz'}")
+	print(
+		"Scanner cycle schedule:",
+		f"{len(cycle_schedule)} cycles, target peak phase {target_peak_phase:.3f}, "
+		f"duration range {min(c.duration for c in cycle_schedule):.3f}-{max(c.duration for c in cycle_schedule):.3f}s",
+	)
+	print(f"Scanner duration: {SCANNER_DURATION:.1f}s, fps: {SCANNER_FPS:.1f}, frames: {SCANNER_FRAMES}")
+	
+	print(f"Generated scanner data at {OUT_DIR / 'scanner_sequence.npz'}")
 	print(f"Scanner PNGs: {SCANNER_IMG_DIR}")
 
 

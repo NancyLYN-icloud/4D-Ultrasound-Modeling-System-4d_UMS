@@ -25,7 +25,7 @@ TEST_MONITOR_PATH = data_path("test", "monitor_stream.npz")
 RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
 SCANNER_IMG_DIR = data_path("test", "image", "scanner")
 PHASE_MODEL_PREFIX = "phase_sequence_models_run_"
-PHASE_MODEL_BASE_DIR = data_path("simulation_mesh")
+PHASE_MODEL_BASE_DIR = data_path("simuilate_data")
 FRAME_SIZE = 512
 PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
 

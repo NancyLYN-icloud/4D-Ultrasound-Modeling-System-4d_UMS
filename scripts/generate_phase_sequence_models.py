@@ -6,9 +6,11 @@ from pathlib import Path
 import argparse
 import csv
 import math
+import shutil
 import sys
 
 import numpy as np
+import trimesh
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,12 +19,15 @@ if str(ROOT) not in sys.path:
 
 from src.config import PipelineConfig, SurfaceModelConfig
 from src.paths import data_path
-from src.modeling.surface_reconstruction import reconstruct_meshes_from_pointclouds
+from src.modeling.surface_reconstruction import MeshBuildResult, _mesh_export, _read_xyz_ply, reconstruct_meshes_from_pointclouds
+from src.preprocessing.phase_detection import PhaseDetector
 import scripts.regenerate_freehand_scanner_sequence as regen
 
 
 REFERENCE_PLY = data_path("test", "stomach.ply")
-OUTPUT_BASE_DIR = data_path("simulation_mesh")
+MONITOR_STREAM = data_path("test", "monitor_stream.npz")
+OUTPUT_BASE_DIR = data_path("simuilate_data")
+GT_MESH_DIR = data_path("simuilate_data", "meshes")
 OUTPUT_PREFIX = "phase_sequence_models_run"
 OBSERVATION_ROTATION_DEG = np.array([-35.0, 20.0, -32.0], dtype=np.float64)
 
@@ -35,6 +40,59 @@ class PhaseModelStats:
     wave_center_s: float
     max_contraction: float
     pointcloud_path: Path
+
+
+def _detect_monitor_aligned_phase_count(monitor_stream: Path, phase_bin_step_seconds: float) -> tuple[int, float]:
+    if not monitor_stream.exists():
+        raise FileNotFoundError(f"Monitor stream not found: {monitor_stream}")
+    features = []
+    with np.load(monitor_stream) as data:
+        timestamps = data["timestamps"]
+        feature_trace = data["feature_trace"]
+        features = [
+            regen.FrameFeature(timestamp=float(ts), value=float(value))
+            for ts, value in zip(timestamps, feature_trace)
+        ]
+    cycles = PhaseDetector(PipelineConfig().phase_detection).detect_cycles(features)
+    if not cycles:
+        raise RuntimeError("No gastric cycles detected from monitor stream")
+    avg_duration = float(np.mean([cycle.duration for cycle in cycles]))
+    phase_count = max(2, int(np.ceil(avg_duration / max(phase_bin_step_seconds, 1e-8))))
+    return phase_count, avg_duration
+
+
+def _archive_existing_gt_meshes(mesh_dir: Path) -> Path | None:
+    existing_files = sorted(mesh_dir.glob("*")) if mesh_dir.exists() else []
+    existing_files = [path for path in existing_files if path.is_file()]
+    if not existing_files:
+        return None
+
+    archive_dir = mesh_dir.parent / f"meshes_archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    archive_dir.mkdir(parents=True, exist_ok=False)
+    for path in existing_files:
+        shutil.move(str(path), str(archive_dir / path.name))
+    return archive_dir
+
+
+def _sync_meshes_to_gt(meshes: list[object], mesh_dir: Path, run_dir: Path, summary_path: Path) -> tuple[Path | None, list[Path]]:
+    archive_dir = _archive_existing_gt_meshes(mesh_dir)
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+
+    synced_paths: list[Path] = []
+    for result in meshes:
+        source_path = result.mesh_path
+        destination = mesh_dir / source_path.name
+        shutil.copy2(source_path, destination)
+        synced_paths.append(destination)
+
+    shutil.copy2(summary_path, mesh_dir / summary_path.name)
+    phase_summary = run_dir / "phase_sequence_summary.csv"
+    if phase_summary.exists():
+        shutil.copy2(phase_summary, mesh_dir / phase_summary.name)
+    transform_path = run_dir / "observation_transform.npz"
+    if transform_path.exists():
+        shutil.copy2(transform_path, mesh_dir / transform_path.name)
+    return archive_dir, synced_paths
 
 
 def _rotation_matrix_xyz(angles_deg: np.ndarray) -> np.ndarray:
@@ -159,7 +217,6 @@ def _phase_wave(
 
 
 def _deform_reference_points(
-    reference_points: np.ndarray,
     canonical_points: np.ndarray,
     model: regen.GastricReferenceModel,
     phase: float,
@@ -174,7 +231,7 @@ def _deform_reference_points(
     z_new = np.empty_like(axis)
 
     max_contraction = float(np.max(contraction))
-    for idx in range(reference_points.shape[0]):
+    for idx in range(canonical_points.shape[0]):
         si = float(s[idx])
         x0, cy0, cz0, ry0, rz0 = regen._interp_profile(model, si)
         dy = canonical_points[idx, 1] - cy0
@@ -211,6 +268,107 @@ def _deform_reference_points(
     return observed_points.astype(np.float32), wave_center, max_contraction
 
 
+def _observed_to_canonical_points(
+    observed_points: np.ndarray,
+    model: regen.GastricReferenceModel,
+    observation_rotation: np.ndarray,
+) -> np.ndarray:
+    world_points = model.world_center + ((observation_rotation.T @ (observed_points - model.world_center).T).T)
+    canonical_points = (model.world_basis.T @ (world_points - model.world_center).T).T
+    return canonical_points.astype(np.float64)
+
+
+def _build_shared_base_mesh(
+    relaxed_pointcloud_path: Path,
+    surface_cfg: SurfaceModelConfig,
+    phase_bin_step_seconds: float,
+) -> tuple[trimesh.Trimesh, MeshBuildResult]:
+    results = reconstruct_meshes_from_pointclouds(
+        [relaxed_pointcloud_path],
+        surface_cfg,
+        phase_bin_step_seconds=phase_bin_step_seconds,
+    )
+    if not results:
+        raise RuntimeError("Failed to reconstruct relaxed base mesh from phase 0 point cloud")
+    result = results[0]
+    mesh = trimesh.load(result.mesh_path, force="mesh")
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise TypeError(f"Failed to load reconstructed base mesh: {result.mesh_path}")
+    return mesh, result
+
+
+def _export_shared_topology_meshes(
+    base_mesh: trimesh.Trimesh,
+    base_mesh_result: MeshBuildResult,
+    pointcloud_paths: list[Path],
+    phase_values: np.ndarray,
+    model: regen.GastricReferenceModel,
+    observation_rotation: np.ndarray,
+    mesh_dir: Path,
+    phase_bin_step_seconds: float,
+) -> list[MeshBuildResult]:
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+    base_canonical_vertices = _observed_to_canonical_points(
+        np.asarray(base_mesh.vertices, dtype=np.float64),
+        model,
+        observation_rotation,
+    )
+
+    results: list[MeshBuildResult] = []
+    for phase_index, (pointcloud_path, phase_value) in enumerate(zip(pointcloud_paths, phase_values)):
+        deformed_vertices, _, _ = _deform_reference_points(
+            base_canonical_vertices,
+            model,
+            float(phase_value),
+            observation_rotation,
+        )
+        mesh = trimesh.Trimesh(vertices=deformed_vertices, faces=np.asarray(base_mesh.faces, dtype=np.int64), process=False)
+        mesh.remove_unreferenced_vertices()
+        if not mesh.is_watertight:
+            trimesh.repair.fill_holes(mesh)
+
+        mesh_path = mesh_dir / pointcloud_path.name.replace(".ply", "_mesh.ply")
+        _mesh_export(mesh, mesh_path)
+        input_points = int(len(_read_xyz_ply(pointcloud_path)))
+        sampled_points = int(min(input_points, base_mesh_result.sampled_points))
+        timestamp_s = float(_phase_timestamp_seconds(phase_index, phase_bin_step_seconds))
+        results.append(
+            MeshBuildResult(
+                pointcloud_path=pointcloud_path,
+                mesh_path=mesh_path,
+                timestamp_s=timestamp_s,
+                input_points=input_points,
+                sampled_points=sampled_points,
+                vertices=int(len(mesh.vertices)),
+                faces=int(len(mesh.faces)),
+                watertight=bool(mesh.is_watertight),
+                method="shared_topology_deformation",
+            )
+        )
+        print(
+            f"[PhaseModels][SharedMesh] phase={phase_value:.3f} -> {mesh_path.name} "
+            f"({len(mesh.vertices)} verts, {len(mesh.faces)} faces, watertight={mesh.is_watertight})"
+        )
+
+    summary_path = mesh_dir / "mesh_summary.csv"
+    with summary_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["phase_pointcloud", "timestamp_s", "mesh", "input_points", "sampled_points", "vertices", "faces", "watertight", "method"])
+        for result in results:
+            writer.writerow([
+                result.pointcloud_path.name,
+                "" if result.timestamp_s is None else f"{result.timestamp_s:.6f}",
+                result.mesh_path.name,
+                result.input_points,
+                result.sampled_points,
+                result.vertices,
+                result.faces,
+                int(result.watertight),
+                result.method,
+            ])
+    return results
+
+
 def _write_pointcloud_ply(points: np.ndarray, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
@@ -227,7 +385,7 @@ def _write_pointcloud_ply(points: np.ndarray, out_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a gastric peristaltic phase-sequence model set")
-    parser.add_argument("--phase-count", type=int, default=41, help="Number of phase models to generate across one cycle")
+    parser.add_argument("--phase-count", type=int, default=None, help="Number of phase models to generate across one cycle; defaults to monitor-aligned bin count")
     parser.add_argument(
         "--output-base-dir",
         type=str,
@@ -238,31 +396,35 @@ def main() -> None:
 
     if not REFERENCE_PLY.exists():
         raise FileNotFoundError(f"Reference stomach point cloud not found: {REFERENCE_PLY}")
-    if args.phase_count < 2:
-        raise ValueError("phase-count must be at least 2")
-
     phase_bin_step_seconds = float(PipelineConfig().phase_detection.phase_bin_step_seconds)
     if phase_bin_step_seconds <= 0.0:
         raise ValueError("phase_bin_step_seconds must be positive")
+
+    if args.phase_count is None:
+        phase_count, avg_duration = _detect_monitor_aligned_phase_count(MONITOR_STREAM, phase_bin_step_seconds)
+    else:
+        phase_count = int(args.phase_count)
+        avg_duration = float("nan")
+    if phase_count < 2:
+        raise ValueError("phase-count must be at least 2")
 
     output_base_dir = Path(args.output_base_dir)
     run_dir, run_id = _create_indexed_output_dir(output_base_dir, OUTPUT_PREFIX)
     points_dir = run_dir / "pointclouds"
     points_dir.mkdir(parents=True, exist_ok=True)
 
-    reference_points, _, canonical_points = _read_reference_points(REFERENCE_PLY)
+    _, _, canonical_points = _read_reference_points(REFERENCE_PLY)
     model = regen.load_reference_model(REFERENCE_PLY)
     observation_rotation = _rotation_matrix_xyz(OBSERVATION_ROTATION_DEG)
     transform_path = _write_observation_transform(run_dir, model.world_center, observation_rotation, phase_bin_step_seconds)
 
-    phase_values = np.linspace(0.0, 1.0, args.phase_count, endpoint=False, dtype=np.float64)
+    phase_values = np.linspace(0.0, 1.0, phase_count, endpoint=False, dtype=np.float64)
 
     pointcloud_paths: list[Path] = []
     stats_rows: list[PhaseModelStats] = []
     for phase_index, phase_value in enumerate(phase_values):
         timestamp_s = _phase_timestamp_seconds(phase_index, phase_bin_step_seconds)
         deformed_points, wave_center, max_contraction = _deform_reference_points(
-            reference_points,
             canonical_points,
             model,
             float(phase_value),
@@ -291,10 +453,20 @@ def main() -> None:
 
     surface_cfg = SurfaceModelConfig()
     surface_cfg.out_subdir = "meshes"
-    meshes = reconstruct_meshes_from_pointclouds(
-        pointcloud_paths,
+    base_mesh, base_mesh_result = _build_shared_base_mesh(
+        pointcloud_paths[0],
         surface_cfg,
-        phase_bin_step_seconds=phase_bin_step_seconds,
+        phase_bin_step_seconds,
+    )
+    meshes = _export_shared_topology_meshes(
+        base_mesh,
+        base_mesh_result,
+        pointcloud_paths,
+        phase_values,
+        model,
+        observation_rotation,
+        points_dir / surface_cfg.out_subdir,
+        phase_bin_step_seconds,
     )
 
     summary_path = run_dir / "phase_sequence_summary.csv"
@@ -311,13 +483,20 @@ def main() -> None:
                 row.pointcloud_path.name,
             ])
 
+    archive_dir, synced_paths = _sync_meshes_to_gt(meshes, GT_MESH_DIR, run_dir, run_dir / "pointclouds" / "meshes" / "mesh_summary.csv")
+
     print(f"[PhaseModels] Output directory: {run_dir}")
-    print(f"[PhaseModels] Phase count: {args.phase_count}")
+    print(f"[PhaseModels] Phase count: {phase_count}")
     print(f"[PhaseModels] Phase bin step: {phase_bin_step_seconds:.6f}s")
+    if not np.isnan(avg_duration):
+        print(f"[PhaseModels] Monitor-aligned average cycle duration: {avg_duration:.6f}s")
     print(f"[PhaseModels] Point clouds: {len(pointcloud_paths)}")
     print(f"[PhaseModels] Meshes: {len(meshes)}")
     print(f"[PhaseModels] Summary: {summary_path}")
     print(f"[PhaseModels] Observation transform: {transform_path}")
+    print(f"[PhaseModels] Synced GT meshes: {len(synced_paths)} -> {GT_MESH_DIR}")
+    if archive_dir is not None:
+        print(f"[PhaseModels] Archived previous GT meshes to: {archive_dir}")
 
 
 if __name__ == "__main__":

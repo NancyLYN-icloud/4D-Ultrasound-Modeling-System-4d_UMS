@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# DEFAULT_DATA_ROOT = Path("/home/liuyanan/data/Research_Data/4D-UMS")
-DEFAULT_DATA_ROOT = Path("/Users/nancy.l/Desktop/工作/博士工作/科研/Program/4D/4D UMS/data")
+DEFAULT_DATA_ROOT = Path("/home/liuyanan/data/Research_Data/4D-UMS")
+# DEFAULT_DATA_ROOT = Path("/Users/nancy.l/Desktop/工作/博士工作/科研/Program/4D/4D UMS/data")
 
 
 def get_data_root() -> Path:

@@ -174,7 +174,10 @@ def estimate_cycles(
             end = best_end
             # 选取 start 和 end 之间的一个峰值作为周期的峰位置
             peaks_between = [p for p in detect_peaks(smooth, distance=1) if start < p < end]
-            peak = peaks_between[0] if peaks_between else (start + end) // 2
+            if peaks_between:
+                peak = max(peaks_between, key=lambda p: float(smooth[p]))
+            else:
+                peak = (start + end) // 2
             cycles.append((start, peak, end))
             print(f"[signals] 周期 {len(cycles)-1}: 谷值{i}({start}) -> 谷值{valleys.index(end)}({end}), 峰值{peak}, 间隔{end-start}样本")
             i = valleys.index(end)

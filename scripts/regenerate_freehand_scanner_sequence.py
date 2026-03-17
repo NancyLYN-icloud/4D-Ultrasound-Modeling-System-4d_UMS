@@ -24,8 +24,9 @@ TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
 SCANNER_IMG_DIR = data_path("test", "image", "scanner")
 REFERENCE_PLY = data_path("test", "stomach.ply")
 
-SCANNER_DURATION = 240.0
-SCANNER_FRAMES = 720
+SCANNER_DURATION = 900.0
+SCANNER_FPS = 10.0
+SCANNER_FRAMES = int(SCANNER_DURATION * SCANNER_FPS)
 SCANNER_SIZE = 512
 PIXEL_SPACING_MM = 0.42
 PROFILE_BINS = 96
@@ -327,7 +328,7 @@ def clear_scanner_pngs(path: Path) -> None:
 
 
 def generate_scanner_stream(model: GastricReferenceModel, gastric_period: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	timestamps = np.linspace(0.0, SCANNER_DURATION, SCANNER_FRAMES, dtype=np.float64)
+	timestamps = np.arange(SCANNER_FRAMES, dtype=np.float64) / SCANNER_FPS
 	frames = np.zeros((SCANNER_FRAMES, SCANNER_SIZE, SCANNER_SIZE), dtype=np.float32)
 	positions = np.zeros((SCANNER_FRAMES, 3), dtype=np.float64)
 	orientations = np.zeros((SCANNER_FRAMES, 3, 3), dtype=np.float64)
@@ -374,6 +375,7 @@ def main() -> None:
 	frames, timestamps, positions, orientations = generate_scanner_stream(model, gastric_period)
 	write_outputs(frames, timestamps, positions, orientations)
 	print(f"Detected gastric period: {gastric_period:.6f}s")
+	print(f"Scanner duration: {SCANNER_DURATION:.1f}s, fps: {SCANNER_FPS:.1f}, frames: {SCANNER_FRAMES}")
 	print(f"Generated scanner data at {RAW_SCANNER_PATH}")
 	print(f"Synced scanner data at {TEST_SCANNER_PATH}")
 	print(f"Scanner PNGs: {SCANNER_IMG_DIR}")

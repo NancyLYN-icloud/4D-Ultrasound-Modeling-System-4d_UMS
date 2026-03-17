@@ -73,6 +73,56 @@ class PhaseBinner:
 		edges = np.linspace(0.0, 1.0, n_bins + 1)
 		return edges
 
+	@staticmethod
+	def _wrapped_phase_distance(phases: np.ndarray, center: float) -> np.ndarray:
+		return np.abs(((phases - center + 0.5) % 1.0) - 0.5)
+
+	def _build_sliding_window_bins(
+		self,
+		samples: Sequence[ScanSample],
+		phases: Sequence[float],
+		avg_duration: float,
+		step_seconds: float | None = None,
+		window_seconds: float | None = None,
+	) -> List[PhaseBin]:
+		if len(samples) == 0:
+			return []
+		if len(samples) != len(phases):
+			raise ValueError("samples and phases must have the same length")
+
+		if step_seconds is None:
+			step_seconds = float(self.config.phase_bin_step_seconds)
+		if window_seconds is None:
+			window_seconds = float(self.config.sliding_window_seconds)
+		if step_seconds <= 0:
+			raise ValueError("step_seconds must be positive")
+		if window_seconds <= 0:
+			raise ValueError("window_seconds must be positive")
+
+		bin_edges = self.generate_bin_edges_by_time(avg_duration, step_seconds)
+		bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+		phases_arr = np.asarray(phases, dtype=float)
+		window_radius = min(float(window_seconds) / max(2.0 * avg_duration, 1e-8), 0.5)
+		result: list[PhaseBin] = []
+
+		for center in bin_centers:
+			mask = ~np.isnan(phases_arr)
+			if np.any(mask):
+				mask = mask & (self._wrapped_phase_distance(phases_arr, float(center)) <= window_radius)
+			window_samples = [sample for sample, keep in zip(samples, mask) if keep]
+			result.append(PhaseBin(phase_center=float(center), samples=window_samples))
+
+		bin_sizes = np.asarray([len(bin_data.samples) for bin_data in result], dtype=np.int32)
+		print(
+			f"[PhaseBinner] sliding_time_window: samples={len(samples)}, bins={len(result)}, "
+			f"avg_duration={avg_duration:.3f}s, step_seconds={step_seconds}, window_seconds={window_seconds}"
+		)
+		print(
+			f"[PhaseBinner] 各bin样本数: min={int(bin_sizes.min())}, max={int(bin_sizes.max())}, "
+			f"mean={float(bin_sizes.mean()):.2f}, first10={bin_sizes[:10].tolist()}"
+		)
+		return result
+
 	def bin_samples_using_duration(self, samples: Sequence[ScanSample], avg_duration: float, step_seconds: float | None = None) -> tuple[List[PhaseBin], List[CycleInfo]]:
 		"""把 `samples`（按时间）基于平均周期时长划分周期、归一化相位，并分箱返回。
 
@@ -87,15 +137,20 @@ class PhaseBinner:
 		if len(cycles) == 0:
 			return [], []
 
+		# compute normalized phases for each sample using existing signals.assign_phase
+		cycle_bounds = [(c.start_time, c.end_time) for c in cycles]
+		phases = signals.assign_phase(timestamps, cycle_bounds)
+
+		strategy = str(self.config.binning_strategy).lower()
+		if strategy == "sliding_time_window":
+			result = self._build_sliding_window_bins(samples, phases, avg_duration, step_seconds=step_seconds)
+			return result, cycles
+
 		# create bin edges based on desired temporal step and avg_duration
 		if step_seconds is None:
 			step_seconds = float(self.config.phase_bin_step_seconds)
 		bin_edges = self.generate_bin_edges_by_time(avg_duration, step_seconds)
 		bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:]) 
-
-		# compute normalized phases for each sample using existing signals.assign_phase
-		cycle_bounds = [(c.start_time, c.end_time) for c in cycles]
-		phases = signals.assign_phase(timestamps, cycle_bounds)
 
 		# build empty bins
 		bins: Dict[int, PhaseBin] = {i: PhaseBin(phase_center=float(center)) for i, center in enumerate(bin_centers)}
@@ -119,6 +174,56 @@ class PhaseBinner:
 			f"mean={float(bin_sizes.mean()):.2f}, first10={bin_sizes[:10].tolist()}"
 		)
 		return result, cycles
+
+	def bin_samples_with_phases(
+		self,
+		samples: Sequence[ScanSample],
+		phases: Sequence[float],
+		avg_duration: float,
+		step_seconds: float | None = None,
+	) -> List[PhaseBin]:
+		"""使用外部给定的相位值进行分箱。
+
+		该接口用于接入非线性相位标准化模块，使分箱不再依赖简单线性相位映射。
+		"""
+		if len(samples) == 0:
+			return []
+		if len(samples) != len(phases):
+			raise ValueError("samples and phases must have the same length")
+
+		strategy = str(self.config.binning_strategy).lower()
+		if strategy == "sliding_time_window":
+			return self._build_sliding_window_bins(
+				samples,
+				phases,
+				avg_duration,
+				step_seconds=step_seconds,
+			)
+
+		if step_seconds is None:
+			step_seconds = float(self.config.phase_bin_step_seconds)
+		bin_edges = self.generate_bin_edges_by_time(avg_duration, step_seconds)
+		bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+		bins: Dict[int, PhaseBin] = {i: PhaseBin(phase_center=float(center)) for i, center in enumerate(bin_centers)}
+
+		for sample, phase_value in zip(samples, phases):
+			if np.isnan(phase_value):
+				continue
+			bin_idx = np.digitize(phase_value, bin_edges) - 1
+			bin_idx = int(np.clip(bin_idx, 0, len(bin_centers) - 1))
+			bins[bin_idx].samples.append(sample)
+
+		result = [bins[i] for i in range(len(bin_centers))]
+		bin_sizes = np.asarray([len(bin_data.samples) for bin_data in result], dtype=np.int32)
+		print(
+			f"[PhaseBinner] bin_samples_with_phases: samples={len(samples)}, bins={len(result)}, "
+			f"avg_duration={avg_duration:.3f}s, step_seconds={step_seconds}"
+		)
+		print(
+			f"[PhaseBinner] 各bin样本数: min={int(bin_sizes.min())}, max={int(bin_sizes.max())}, "
+			f"mean={float(bin_sizes.mean()):.2f}, first10={bin_sizes[:10].tolist()}"
+		)
+		return result
 
 	def bin_samples(self, samples: Sequence[ScanSample], cycles: Sequence[CycleInfo]) -> List[PhaseBin]:
 		"""输出每个相位窗内的样本集合（使用 config 中的 `bin_edges`）。"""

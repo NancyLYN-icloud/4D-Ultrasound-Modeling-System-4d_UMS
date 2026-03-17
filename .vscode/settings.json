@@ -1,4 +1,7 @@
 {
+    "python.defaultInterpreterPath": "/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python",
+    "python.condaPath": "/home/liuyanan/program/environment/miniconda3/bin/conda",
+    "python.terminal.activateEnvironment": true,
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

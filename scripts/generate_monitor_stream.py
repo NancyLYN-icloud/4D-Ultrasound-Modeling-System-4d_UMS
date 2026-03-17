@@ -1,8 +1,9 @@
 """Generate a synthetic gastric antrum monitor stream and matching PNG frames.
 
 The generated data mimics an ultrasound probe staying on a transverse antrum view
-for about one minute. The lumen contracts once every 20 seconds, producing three
-clear peristaltic cycles over the sequence.
+for multiple minutes. The signal intentionally contains mild cycle-to-cycle
+variation in period length, peak timing, and contraction strength so that
+multi-cycle phase standardization is meaningfully exercised.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ OUT_NPZ = data_path("test", "monitor_stream.npz")
 OUT_IMG_DIR = data_path("test", "image", "monitor")
 
 IMAGE_SIZE = 64
-DURATION_SECONDS = 60.0
+DURATION_SECONDS = 180.0
 FRAME_RATE = 3.0
 PERISTALSIS_PERIOD = 20.0
 RNG_SEED = 20260311
@@ -36,12 +37,86 @@ def periodic_distance(phase: np.ndarray, center: float) -> np.ndarray:
     return ((phase - center + 0.5) % 1.0) - 0.5
 
 
-def contraction_waveform(timestamps: np.ndarray) -> np.ndarray:
-    """Model a smooth gastric contraction pulse once every 20 seconds."""
-    phase = (timestamps / PERISTALSIS_PERIOD) % 1.0
-    contraction = np.exp(-0.5 * (periodic_distance(phase, 0.62) / 0.14) ** 2)
-    shoulder = 0.35 * np.exp(-0.5 * (periodic_distance(phase, 0.38) / 0.23) ** 2)
-    waveform = contraction + shoulder
+def build_cycle_schedule(total_duration: float, rng: np.random.Generator) -> dict[str, np.ndarray]:
+    """Create a deterministic but non-stationary cycle schedule."""
+    durations: list[float] = []
+    start_times: list[float] = []
+    peak_phases: list[float] = []
+    peak_widths: list[float] = []
+    shoulder_phases: list[float] = []
+    shoulder_widths: list[float] = []
+    amplitudes: list[float] = []
+
+    elapsed = 0.0
+    cycle_index = 0
+    while elapsed < total_duration + PERISTALSIS_PERIOD:
+        start_times.append(elapsed)
+
+        duration = PERISTALSIS_PERIOD * (
+            1.0
+            + 0.10 * np.sin(2.0 * np.pi * cycle_index / 4.0 + 0.2)
+            + float(rng.normal(0.0, 0.035))
+        )
+        duration = float(np.clip(duration, 16.5, 24.5))
+
+        peak_phase = 0.58 + 0.08 * np.sin(2.0 * np.pi * cycle_index / 5.0 + 0.7) + float(rng.normal(0.0, 0.02))
+        peak_phase = float(np.clip(peak_phase, 0.42, 0.74))
+
+        peak_width = float(np.clip(0.12 + float(rng.normal(0.0, 0.015)), 0.08, 0.17))
+        shoulder_phase = float(np.clip(peak_phase - 0.22 + float(rng.normal(0.0, 0.025)), 0.18, peak_phase - 0.06))
+        shoulder_width = float(np.clip(0.20 + float(rng.normal(0.0, 0.03)), 0.14, 0.28))
+        amplitude = float(
+            np.clip(
+                0.95 + 0.12 * np.sin(2.0 * np.pi * cycle_index / 3.0 + 0.5) + float(rng.normal(0.0, 0.04)),
+                0.78,
+                1.18,
+            )
+        )
+
+        durations.append(duration)
+        peak_phases.append(peak_phase)
+        peak_widths.append(peak_width)
+        shoulder_phases.append(shoulder_phase)
+        shoulder_widths.append(shoulder_width)
+        amplitudes.append(amplitude)
+
+        elapsed += duration
+        cycle_index += 1
+
+    start_arr = np.asarray(start_times, dtype=np.float32)
+    duration_arr = np.asarray(durations, dtype=np.float32)
+    return {
+        "start_times": start_arr,
+        "end_times": start_arr + duration_arr,
+        "durations": duration_arr,
+        "peak_phases": np.asarray(peak_phases, dtype=np.float32),
+        "peak_widths": np.asarray(peak_widths, dtype=np.float32),
+        "shoulder_phases": np.asarray(shoulder_phases, dtype=np.float32),
+        "shoulder_widths": np.asarray(shoulder_widths, dtype=np.float32),
+        "amplitudes": np.asarray(amplitudes, dtype=np.float32),
+    }
+
+
+def contraction_waveform(timestamps: np.ndarray, schedule: dict[str, np.ndarray]) -> np.ndarray:
+    """Model a smooth gastric contraction pulse with per-cycle variability."""
+    cycle_indices = np.searchsorted(schedule["end_times"], timestamps, side="right")
+    cycle_indices = np.clip(cycle_indices, 0, len(schedule["durations"]) - 1)
+    local_time = timestamps - schedule["start_times"][cycle_indices]
+    phase = np.clip(local_time / schedule["durations"][cycle_indices], 0.0, 1.0)
+
+    contraction = schedule["amplitudes"][cycle_indices] * np.exp(
+        -0.5 * (periodic_distance(phase, schedule["peak_phases"][cycle_indices]) / schedule["peak_widths"][cycle_indices]) ** 2
+    )
+    shoulder = 0.32 * np.exp(
+        -0.5
+        * (
+            periodic_distance(phase, schedule["shoulder_phases"][cycle_indices])
+            / schedule["shoulder_widths"][cycle_indices]
+        )
+        ** 2
+    )
+    relaxation = 0.10 * np.exp(-0.5 * (periodic_distance(phase, 0.90) / 0.16) ** 2)
+    waveform = contraction + shoulder + relaxation
     waveform = (waveform - waveform.min()) / (waveform.max() - waveform.min())
     return waveform.astype(np.float32)
 
@@ -111,8 +186,9 @@ def save_png_sequence(frames: np.ndarray, output_dir: Path) -> None:
 def main() -> None:
     rng = np.random.default_rng(RNG_SEED)
     total_frames = int(DURATION_SECONDS * FRAME_RATE)
-    timestamps = np.linspace(0.0, DURATION_SECONDS, total_frames, dtype=np.float32)
-    contraction = contraction_waveform(timestamps)
+    timestamps = (np.arange(total_frames, dtype=np.float32) / np.float32(FRAME_RATE)).astype(np.float32)
+    schedule = build_cycle_schedule(DURATION_SECONDS, rng)
+    contraction = contraction_waveform(timestamps, schedule)
     xx, yy = make_coordinate_grid(IMAGE_SIZE)
 
     frames = np.stack(
@@ -120,7 +196,8 @@ def main() -> None:
         axis=0,
     ).astype(np.float32)
 
-    feature_trace = (0.03 + 0.15 * contraction).astype(np.float32)
+    slow_baseline = 0.008 * np.sin(2.0 * np.pi * timestamps / 95.0 + 0.3)
+    feature_trace = (0.03 + slow_baseline + 0.15 * contraction).astype(np.float32)
 
     OUT_NPZ.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -140,6 +217,14 @@ def main() -> None:
     print(
         "Cycle count over duration:",
         f"{DURATION_SECONDS / PERISTALSIS_PERIOD:.1f}",
+    )
+    print(
+        "Scheduled cycles:",
+        f"{len(schedule['durations'])} total, mean duration {float(np.mean(schedule['durations'])):.2f}s",
+    )
+    print(
+        "Peak phase range:",
+        f"{float(schedule['peak_phases'].min()):.3f} .. {float(schedule['peak_phases'].max()):.3f}",
     )
 
 

@@ -1,4 +1,4 @@
-"""示例入口：串联运行多周期平均法流水线。"""
+"""示例入口：串联运行多周期分箱点云/网格流水线。"""
 from __future__ import annotations
 
 import numpy as np
@@ -13,6 +13,10 @@ from src.paths import data_path
 def main() -> None:
     """研究阶段示例：使用仿真数据验证流程连通性。"""
     config = PipelineConfig()
+    config.dynamic_model.enabled = True
+    config.dynamic_model.export_timeline_meshes = True
+    config.dynamic_model.timeline_stride = 12
+    config.dynamic_model.timeline_max_exports = 60
     #monitor = UltrasoundMonitor.simulate(config.acquisition) #应用仿真数据时启用此行
     monitor = UltrasoundMonitor.from_npz(config.acquisition, str(data_path("test", "monitor_stream.npz"))) #使用预录制数据时启用此行
     print(f"加载监测器，包含 {len(monitor.frames)} 帧") 
@@ -48,23 +52,39 @@ def main() -> None:
     print("开始运行流水线...")
     output = pipeline.run(monitor, scanner)
     print("流水线运行完成")
-    
-    print(f"相位体积数量: {len(output.phase_volumes)}")
-    if output.phase_volumes:
-        first_volume = output.phase_volumes[0].volume.intensities
-        print(f"  第一个相位体积形状: {first_volume.shape}")
-        print(f"  第一个相位体积唯一值: {np.unique(first_volume)}")
-        print(f"  第一个相位体积均值: {np.mean(first_volume):.2f}, 标准差: {np.std(first_volume):.2f}")
-    
-    print(f"验证报告平滑度得分: {output.validation_report.smoothness_score}")
-    print(f"验证报告蠕动速度: {output.validation_report.peristalsis_velocity}")
-    
-    # 额外调试验证指标
-    print("调试验证指标...")
-    if hasattr(output.validation_report, 'debug_info'):
-        print(f"  调试信息: {output.validation_report.debug_info}")
-    else:
-        print("  验证报告中无调试信息")
+
+    print(f"相位点云数量: {len(output.pointcloud_paths)}")
+    if output.pointcloud_paths:
+        print(f"  第一个点云文件: {output.pointcloud_paths[0]}")
+    if output.pointcloud_summaries:
+        valid_summaries = [item for item in output.pointcloud_summaries if item.exported_point_count > 0]
+        if valid_summaries:
+            mean_confidence = sum(item.mean_confidence for item in valid_summaries) / len(valid_summaries)
+            mean_slice_ratio = sum(item.extracted_slice_ratio for item in valid_summaries) / len(valid_summaries)
+            print(f"  平均点云置信度: {mean_confidence:.3f}")
+            print(f"  平均切片提取率: {mean_slice_ratio:.3f}")
+
+    print(f"相位网格数量: {len(output.mesh_results)}")
+    if output.mesh_results:
+        watertight_ratio = sum(int(r.watertight) for r in output.mesh_results) / max(len(output.mesh_results), 1)
+        print(f"  水密网格比例: {watertight_ratio:.2%}")
+        first = output.mesh_results[0]
+        print(f"  第一个网格文件: {first.mesh_path}")
+        print(f"  faces={first.faces}, verts={first.vertices}, method={first.method}")
+
+    print(f"动态网格数量: {len(output.dynamic_mesh_results)}")
+    if output.dynamic_mesh_results:
+        first_dynamic = output.dynamic_mesh_results[0]
+        print(f"  第一个动态网格文件: {first_dynamic.mesh_path}")
+        print(f"  phase={first_dynamic.phase:.3f}, faces={first_dynamic.faces}, verts={first_dynamic.vertices}")
+    print(f"逐帧动态网格数量: {len(output.dynamic_timeline_mesh_results)}")
+    if output.dynamic_timeline_mesh_results:
+        first_frame = output.dynamic_timeline_mesh_results[0]
+        print(f"  第一个逐帧网格文件: {first_frame.mesh_path}")
+        print(
+            f"  frame={first_frame.frame_index}, ts={first_frame.timestamp:.3f}s, "
+            f"phase={first_frame.phase:.3f}, faces={first_frame.faces}, verts={first_frame.vertices}"
+        )
 
 
 if __name__ == "__main__":

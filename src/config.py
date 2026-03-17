@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -28,7 +29,9 @@ class PhaseDetectionConfig:
     smoothing_poly_order: int = 3  # Savitzky-Golay 多项式阶数
     min_cycle_seconds: float = 10.0  # 最短周期 (s)
     max_cycle_seconds: float = 30.0  # 最长周期 (s)
-    phase_bin_step_seconds: float = 0.3  # 动态分箱时每个相位窗对应的时间宽度 (s)，相位窗变宽，每个相位的样本会增大
+    phase_bin_step_seconds: float = 0.3  # 相邻 bin 中心在标准周期上的时间步长 (s)
+    binning_strategy: str = "disjoint_phase_bin"  # 默认恢复为旧的离散相位分箱；可选 `sliding_time_window`
+    sliding_window_seconds: float = 0.9  # 仅在 `sliding_time_window` 时使用
     bin_edges: Sequence[float] = tuple(np.linspace(0.0, 1.0, 11))
 
 
@@ -83,6 +86,17 @@ class PointCloudConfig:
 
 
 @dataclass
+class PhaseCanonicalizationConfig:
+    """非线性相位标准化参数。"""
+
+    enabled: bool = True
+    default_peak_phase: float = 0.5
+    min_peak_phase: float = 0.2
+    max_peak_phase: float = 0.8
+    template_strategy: str = "median"
+
+
+@dataclass
 class SurfaceModelConfig:
     """相位点云表面重建配置。"""
 
@@ -116,6 +130,53 @@ class SurfaceModelConfig:
 
 
 @dataclass
+class DynamicModelConfig:
+    """时空耦合动态隐式建模配置。"""
+
+    enabled: bool = False
+    out_subdir: str = "dynamic_meshes"
+    voxel_size: float = 2.0
+    max_points_per_phase: int = 3000
+    canonical_hidden_dim: int = 128
+    canonical_hidden_layers: int = 4
+    deformation_hidden_dim: int = 128
+    deformation_hidden_layers: int = 3
+    phase_harmonics: int = 4
+    train_steps: int = 120
+    learning_rate: float = 0.001
+    surface_batch_size: int = 1024
+    eikonal_batch_size: int = 1024
+    temporal_batch_size: int = 1024
+    normal_batch_size: int = 1024
+    eikonal_weight: float = 0.05
+    normal_weight: float = 0.15
+    temporal_weight: float = 0.1
+    temporal_acceleration_weight: float = 0.05
+    phase_consistency_weight: float = 0.05
+    periodicity_weight: float = 0.1
+    deformation_weight: float = 0.01
+    temporal_delta_phase: float = 0.05
+    confidence_floor: float = 0.2
+    supervision_binning_strategy: str = "disjoint_phase_bin"
+    supervision_step_seconds: float | None = None
+    supervision_window_seconds: float | None = None
+    overlap_aware_sampling: bool = False
+    overlap_loss_min_scale: float = 0.5
+    overlap_neighbor_stride_bins: int | None = None
+    bbox_padding: float = 0.12
+    mesh_resolution: int = 56
+    mesh_threshold: float = 0.0
+    eval_batch_size: int = 24576
+    min_face_count: int = 300
+    export_timeline_meshes: bool = False
+    timeline_out_subdir: str = "dynamic_timeline_meshes"
+    timeline_stride: int = 1
+    timeline_max_exports: int | None = None
+    random_seed: int = 7
+    use_cuda_if_available: bool = True
+
+
+@dataclass
 class ValidationConfig:
     """模型验证需要的设置。"""
 
@@ -134,7 +195,9 @@ class PipelineConfig:
     interpolation: InterpolationConfig = field(default_factory=InterpolationConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     pointcloud: PointCloudConfig = field(default_factory=PointCloudConfig)
+    phase_canonicalization: PhaseCanonicalizationConfig = field(default_factory=PhaseCanonicalizationConfig)
     surface_model: SurfaceModelConfig = field(default_factory=SurfaceModelConfig)
+    dynamic_model: DynamicModelConfig = field(default_factory=DynamicModelConfig)
 
 
 @dataclass
@@ -184,6 +247,47 @@ class PhaseBin:
 
     phase_center: float
     samples: List[ScanSample] = field(default_factory=list)
+
+
+@dataclass
+class PointCloudPhaseSummary:
+    """单个相位点云构建阶段的统计摘要。"""
+
+    phase_index: int
+    phase_center: float
+    sample_count: int
+    raw_point_count: int
+    exported_point_count: int
+    mean_confidence: float
+    mean_sample_snr: float
+    extracted_slice_ratio: float
+    pointcloud_path: Optional[Path] = None
+
+
+@dataclass
+class DynamicMeshBuildResult:
+    """动态隐式模型导出的单相位网格摘要。"""
+
+    phase: float
+    mesh_path: Path
+    vertices: int
+    faces: int
+    watertight: bool
+    method: str
+
+
+@dataclass
+class DynamicTimelineMeshBuildResult:
+    """动态隐式模型导出的逐帧时间轴网格摘要。"""
+
+    frame_index: int
+    timestamp: float
+    phase: float
+    mesh_path: Path
+    vertices: int
+    faces: int
+    watertight: bool
+    method: str
 
 
 @dataclass
