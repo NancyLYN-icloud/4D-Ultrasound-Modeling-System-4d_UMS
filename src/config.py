@@ -134,6 +134,7 @@ class DynamicModelConfig:
     """时空耦合动态隐式建模配置。"""
 
     enabled: bool = False
+    method: str = "shared_topology_vertex_field"
     out_subdir: str = "dynamic_meshes"
     voxel_size: float = 2.0
     max_points_per_phase: int = 3000
@@ -153,6 +154,11 @@ class DynamicModelConfig:
     temporal_weight: float = 0.1
     temporal_acceleration_weight: float = 0.05
     phase_consistency_weight: float = 0.05
+    correspondence_temporal_weight: float = 0.0
+    correspondence_acceleration_weight: float = 0.0
+    correspondence_phase_consistency_weight: float = 0.0
+    correspondence_start_fraction: float = 0.0
+    correspondence_ramp_fraction: float = 0.0
     periodicity_weight: float = 0.1
     deformation_weight: float = 0.01
     temporal_delta_phase: float = 0.05
@@ -163,6 +169,10 @@ class DynamicModelConfig:
     overlap_aware_sampling: bool = False
     overlap_loss_min_scale: float = 0.5
     overlap_neighbor_stride_bins: int | None = None
+    spatial_smoothness_weight: float = 0.05
+    centroid_weight: float = 0.05
+    base_mesh_train_steps: int | None = None
+    base_mesh_out_subdir: str = "_dynamic_base_mesh_seed"
     bbox_padding: float = 0.12
     mesh_resolution: int = 56
     mesh_threshold: float = 0.0

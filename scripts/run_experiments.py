@@ -273,6 +273,12 @@ def _build_config(
         config.dynamic_model.temporal_acceleration_weight = float(preset["dynamic_temporal_acceleration_weight"])
     if "dynamic_phase_consistency_weight" in preset:
         config.dynamic_model.phase_consistency_weight = float(preset["dynamic_phase_consistency_weight"])
+    if "dynamic_correspondence_temporal_weight" in preset:
+        config.dynamic_model.correspondence_temporal_weight = float(preset["dynamic_correspondence_temporal_weight"])
+    if "dynamic_correspondence_acceleration_weight" in preset:
+        config.dynamic_model.correspondence_acceleration_weight = float(preset["dynamic_correspondence_acceleration_weight"])
+    if "dynamic_correspondence_phase_consistency_weight" in preset:
+        config.dynamic_model.correspondence_phase_consistency_weight = float(preset["dynamic_correspondence_phase_consistency_weight"])
     if "dynamic_periodicity_weight" in preset:
         config.dynamic_model.periodicity_weight = float(preset["dynamic_periodicity_weight"])
     if "dynamic_deformation_weight" in preset:
@@ -294,6 +300,20 @@ def _build_config(
     elif method == "动态共享":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_vertex_field"
+    elif method == "动态共享-参考对应正则":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_vertex_field_reference_correspondence"
+        config.dynamic_model.correspondence_temporal_weight = 0.01
+        config.dynamic_model.correspondence_acceleration_weight = 0.005
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
+        config.dynamic_model.correspondence_start_fraction = 0.4
+        config.dynamic_model.correspondence_ramp_fraction = 0.2
+    elif method == "动态共享-CPD对应点":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "cpd_field_reference_correspondence"
     else:
         raise ValueError(f"未知实验方法: {method}")
 
@@ -314,6 +334,9 @@ def _build_config(
             ("temporal_weight", "temporal_weight"),
             ("temporal_acceleration_weight", "temporal_acceleration_weight"),
             ("phase_consistency_weight", "phase_consistency_weight"),
+            ("correspondence_temporal_weight", "correspondence_temporal_weight"),
+            ("correspondence_acceleration_weight", "correspondence_acceleration_weight"),
+            ("correspondence_phase_consistency_weight", "correspondence_phase_consistency_weight"),
             ("periodicity_weight", "periodicity_weight"),
             ("deformation_weight", "deformation_weight"),
         ]:
@@ -337,7 +360,7 @@ def _evaluate_output(
 ) -> dict[str, float | int | str]:
     if output.dynamic_mesh_results:
         mesh_items = [(item.mesh_path, float(item.phase)) for item in output.dynamic_mesh_results]
-        mesh_type = "动态共享模型"
+        mesh_type = str(output.dynamic_mesh_results[0].method)
     else:
         mesh_items = [(item.mesh_path, None) for item in output.mesh_results]
         mesh_type = "逐相位静态模型"
@@ -391,7 +414,7 @@ def run_method_comparison(
 ) -> pd.DataFrame:
     """运行静态与动态方法对比实验。"""
     gt_mesh = _load_gt_mesh(gt_mesh_path)
-    methods = ["静态基线", "静态增强", "动态共享"]
+    methods = ["静态基线", "静态增强", "动态共享", "动态共享-参考对应正则", "动态共享-CPD对应点"]
     results: list[dict[str, float | int | str]] = []
 
     for method in methods:
@@ -448,7 +471,7 @@ def run_cpd_ablation(
     for label, ablation in ablations:
         print(f">>> 运行消融：{label}")
         config = _build_config(
-            method="动态共享",
+            method="动态共享-CPD对应点",
             mode=mode,
             dynamic_train_steps=dynamic_train_steps,
             dynamic_mesh_resolution=dynamic_mesh_resolution,
@@ -487,14 +510,14 @@ def main() -> None:
     parser.add_argument("--scanner-path", type=str, default=str(DEFAULT_SCANNER_PATH), help="扫描流 NPZ 路径")
     parser.add_argument("--gt-mesh-path", type=str, default=str(DEFAULT_GT_MESH_PATH), help="真值网格路径")
     parser.add_argument("--run-name", type=str, default=None, help="可选运行名称，会写入本次实验归档目录名")
-    parser.add_argument("--dynamic-train-steps", type=int, default=None, help="覆盖动态共享模型训练步数")
-    parser.add_argument("--dynamic-mesh-resolution", type=int, default=None, help="覆盖动态共享模型导出网格分辨率")
-    parser.add_argument("--normal-weight", type=float, default=None, help="覆盖 CPD-Field 法向约束权重")
-    parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖 CPD-Field 一阶时间平滑权重")
-    parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖 CPD-Field 二阶时间正则权重")
-    parser.add_argument("--phase-consistency-weight", type=float, default=None, help="覆盖 CPD-Field 相位一致性权重")
-    parser.add_argument("--periodicity-weight", type=float, default=None, help="覆盖 CPD-Field 周期边界权重")
-    parser.add_argument("--deformation-weight", type=float, default=None, help="覆盖 CPD-Field 形变幅度正则权重")
+    parser.add_argument("--dynamic-train-steps", type=int, default=None, help="覆盖动态模型训练步数")
+    parser.add_argument("--dynamic-mesh-resolution", type=int, default=None, help="覆盖动态模型导出网格分辨率")
+    parser.add_argument("--normal-weight", type=float, default=None, help="覆盖 CPD 对应点变体法向约束权重")
+    parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖 CPD 对应点变体一阶时间平滑权重")
+    parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖 CPD 对应点变体二阶时间正则权重")
+    parser.add_argument("--phase-consistency-weight", type=float, default=None, help="覆盖 CPD 对应点变体相位一致性权重")
+    parser.add_argument("--periodicity-weight", type=float, default=None, help="覆盖 CPD 对应点变体周期边界权重")
+    parser.add_argument("--deformation-weight", type=float, default=None, help="覆盖 CPD 对应点变体形变幅度正则权重")
     args = parser.parse_args()
 
     out_root = Path(args.out_dir)
