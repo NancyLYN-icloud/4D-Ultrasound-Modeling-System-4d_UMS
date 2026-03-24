@@ -19,10 +19,16 @@ def _geometry_vertices(geometry: trimesh.Trimesh | trimesh.points.PointCloud) ->
 def _sample_geometry_points(
     geometry: trimesh.Trimesh | trimesh.points.PointCloud,
     num_samples: int,
+    random_seed: int = 7,
 ) -> np.ndarray:
     if isinstance(geometry, trimesh.Trimesh) and len(geometry.faces) > 0:
         sample_count = min(int(num_samples), max(len(geometry.faces) * 3, 1))
-        points, _ = trimesh.sample.sample_surface(geometry, sample_count)
+        random_state = np.random.get_state()
+        np.random.seed(int(random_seed))
+        try:
+            points, _ = trimesh.sample.sample_surface(geometry, sample_count)
+        finally:
+            np.random.set_state(random_state)
         return np.asarray(points, dtype=np.float64)
 
     vertices = _geometry_vertices(geometry)
@@ -31,7 +37,8 @@ def _sample_geometry_points(
     if len(vertices) <= num_samples:
         return vertices
 
-    indices = np.random.choice(len(vertices), size=int(num_samples), replace=False)
+    rng = np.random.default_rng(int(random_seed))
+    indices = rng.choice(len(vertices), size=int(num_samples), replace=False)
     return vertices[indices]
 
 
@@ -39,14 +46,15 @@ def compute_chamfer_distance(
     mesh_pred: trimesh.Trimesh,
     mesh_gt: trimesh.Trimesh | trimesh.points.PointCloud,
     num_samples: int = 10000,
+    random_seed: int = 7,
 ) -> float:
     """计算对称 Chamfer Distance (L2)。
     
     CD = (1/N) * ( sum(min(dist(p, GT)^2)) + sum(min(dist(q, Pred)^2)) )
     """
     # 采样点
-    pred_points = _sample_geometry_points(mesh_pred, num_samples)
-    gt_points = _sample_geometry_points(mesh_gt, num_samples)
+    pred_points = _sample_geometry_points(mesh_pred, num_samples, random_seed=random_seed)
+    gt_points = _sample_geometry_points(mesh_gt, num_samples, random_seed=random_seed + 1)
     if len(pred_points) == 0 or len(gt_points) == 0:
         return float("nan")
 
@@ -67,10 +75,11 @@ def compute_hausdorff_distance(
     mesh_gt: trimesh.Trimesh | trimesh.points.PointCloud,
     num_samples: int = 10000,
     percentile: float = 95.0,
+    random_seed: int = 7,
 ) -> float:
     """计算单向 Hausdorff Distance (通常取 Pred->GT 的 HD95)。"""
-    pred_points = _sample_geometry_points(mesh_pred, num_samples)
-    gt_points = _sample_geometry_points(mesh_gt, num_samples)
+    pred_points = _sample_geometry_points(mesh_pred, num_samples, random_seed=random_seed)
+    gt_points = _sample_geometry_points(mesh_gt, num_samples, random_seed=random_seed + 1)
     if len(pred_points) == 0 or len(gt_points) == 0:
         return float("nan")
 
@@ -81,7 +90,7 @@ def compute_hausdorff_distance(
 
 
 def compute_temporal_smoothness(
-    meshes: list[trimesh.Trimesh], num_samples: int = 5000
+    meshes: list[trimesh.Trimesh], num_samples: int = 5000, random_seed: int = 7
 ) -> float:
     """计算时序网格序列的顶点位移平均速度（用于衡量抖动）。
     注意：这假设网格在拓扑上不一致，因此采用最近点距离近似光流。
@@ -94,8 +103,8 @@ def compute_temporal_smoothness(
         m0 = meshes[i]
         m1 = meshes[i+1]
 
-        p0 = _sample_geometry_points(m0, num_samples)
-        p1 = _sample_geometry_points(m1, num_samples)
+        p0 = _sample_geometry_points(m0, num_samples, random_seed=random_seed + i * 2)
+        p1 = _sample_geometry_points(m1, num_samples, random_seed=random_seed + i * 2 + 1)
         if len(p0) == 0 or len(p1) == 0:
             continue
         tree = cKDTree(p1)

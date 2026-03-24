@@ -301,6 +301,42 @@ def _build_config(
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
         config.dynamic_model.method = "shared_topology_vertex_field"
+        if dynamic_train_steps is None and mode == "dynamic-detail":
+            config.dynamic_model.train_steps = 6000
+        config.dynamic_model.bootstrap_offset_weight = 0.18
+        config.dynamic_model.bootstrap_decay_fraction = 0.45
+        config.dynamic_model.unsupported_anchor_weight = 0.0
+        config.dynamic_model.unsupported_laplacian_weight = 0.10
+        config.dynamic_model.correspondence_temporal_weight = 0.01
+        config.dynamic_model.correspondence_acceleration_weight = 0.005
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
+        config.dynamic_model.correspondence_start_fraction = 0.4
+        config.dynamic_model.correspondence_ramp_fraction = 0.2
+        config.dynamic_model.smoothing_iterations = 20
+    elif method == "动态共享-全局基残差":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_global_basis_residual"
+        config.dynamic_model.global_motion_basis_rank = 6
+        config.dynamic_model.bootstrap_offset_weight = 0.10
+        config.dynamic_model.bootstrap_decay_fraction = 0.25
+        config.dynamic_model.basis_coefficient_bootstrap_weight = 0.12
+        config.dynamic_model.basis_temporal_weight = 0.05
+        config.dynamic_model.basis_acceleration_weight = 0.025
+        config.dynamic_model.basis_periodicity_weight = 0.04
+        config.dynamic_model.residual_mean_weight = 0.02
+        config.dynamic_model.residual_basis_projection_weight = 0.04
+        config.dynamic_model.correspondence_temporal_weight = 0.016
+        config.dynamic_model.correspondence_acceleration_weight = 0.008
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.008
+        config.dynamic_model.correspondence_global_only = True
+        config.dynamic_model.correspondence_start_fraction = 0.25
+        config.dynamic_model.correspondence_ramp_fraction = 0.25
+        config.dynamic_model.unsupported_anchor_weight = 0.02
+        config.dynamic_model.unsupported_laplacian_weight = 0.05
+        config.dynamic_model.unsupported_propagation_iterations = 8
+        config.dynamic_model.unsupported_propagation_neighbor_weight = 0.75
+        config.dynamic_model.smoothing_iterations = 8
     elif method == "动态共享-参考对应正则":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
@@ -310,10 +346,50 @@ def _build_config(
         config.dynamic_model.correspondence_phase_consistency_weight = 0.005
         config.dynamic_model.correspondence_start_fraction = 0.4
         config.dynamic_model.correspondence_ramp_fraction = 0.2
+    elif method == "动态共享-连续形变场":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_deformation_field_reference_correspondence"
+        config.dynamic_model.correspondence_temporal_weight = 0.01
+        config.dynamic_model.correspondence_acceleration_weight = 0.005
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
+        config.dynamic_model.correspondence_start_fraction = 0.4
+        config.dynamic_model.correspondence_ramp_fraction = 0.2
+    elif method == "动态共享-解耦运动潜码":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_decoupled_motion_latent"
+        config.dynamic_model.correspondence_temporal_weight = 0.01
+        config.dynamic_model.correspondence_acceleration_weight = 0.005
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
+        config.dynamic_model.correspondence_start_fraction = 0.4
+        config.dynamic_model.correspondence_ramp_fraction = 0.2
+    elif method == "动态共享-解耦形状运动潜码":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "shared_topology_decoupled_shape_motion_latent"
+        config.dynamic_model.correspondence_temporal_weight = 0.01
+        config.dynamic_model.correspondence_acceleration_weight = 0.005
+        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
+        config.dynamic_model.correspondence_start_fraction = 0.4
+        config.dynamic_model.correspondence_ramp_fraction = 0.2
     elif method == "动态共享-CPD对应点":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
         config.dynamic_model.method = "cpd_field_reference_correspondence"
+    elif method == "动态共享-无先验4D场":
+        config.phase_canonicalization.enabled = True
+        config.dynamic_model.enabled = True
+        config.dynamic_model.method = "prior_free_4d_field"
+        config.dynamic_model.canonical_hidden_dim = max(int(config.dynamic_model.canonical_hidden_dim), 192)
+        config.dynamic_model.canonical_hidden_layers = max(int(config.dynamic_model.canonical_hidden_layers), 5)
+        config.dynamic_model.temporal_weight = 0.02
+        config.dynamic_model.temporal_acceleration_weight = 0.01
+        config.dynamic_model.phase_consistency_weight = 0.01
+        config.dynamic_model.periodicity_weight = 0.05
+        config.dynamic_model.normal_weight = 0.15
+        config.dynamic_model.eikonal_weight = 0.08
+        config.dynamic_model.mesh_threshold = 0.0
     else:
         raise ValueError(f"未知实验方法: {method}")
 
@@ -411,10 +487,13 @@ def run_method_comparison(
     mode: str,
     dynamic_train_steps: int | None,
     dynamic_mesh_resolution: int | None,
+    include_prior_free: bool,
 ) -> pd.DataFrame:
     """运行静态与动态方法对比实验。"""
     gt_mesh = _load_gt_mesh(gt_mesh_path)
     methods = ["静态基线", "静态增强", "动态共享", "动态共享-参考对应正则", "动态共享-CPD对应点"]
+    if include_prior_free:
+        methods.append("动态共享-无先验4D场")
     results: list[dict[str, float | int | str]] = []
 
     for method in methods:
@@ -512,6 +591,7 @@ def main() -> None:
     parser.add_argument("--run-name", type=str, default=None, help="可选运行名称，会写入本次实验归档目录名")
     parser.add_argument("--dynamic-train-steps", type=int, default=None, help="覆盖动态模型训练步数")
     parser.add_argument("--dynamic-mesh-resolution", type=int, default=None, help="覆盖动态模型导出网格分辨率")
+    parser.add_argument("--include-prior-free", action="store_true", help="在方法对比中额外加入无先验 4D 场动态建模分支")
     parser.add_argument("--normal-weight", type=float, default=None, help="覆盖 CPD 对应点变体法向约束权重")
     parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖 CPD 对应点变体一阶时间平滑权重")
     parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖 CPD 对应点变体二阶时间正则权重")
@@ -551,6 +631,7 @@ def main() -> None:
                     mode=str(args.mode),
                     dynamic_train_steps=args.dynamic_train_steps,
                     dynamic_mesh_resolution=args.dynamic_mesh_resolution,
+                    include_prior_free=bool(args.include_prior_free),
                 )
                 emit_tables(comparison_df, run_dir, "method_comparison")
 
