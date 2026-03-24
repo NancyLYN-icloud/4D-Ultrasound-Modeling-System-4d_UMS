@@ -489,9 +489,9 @@ def run_method_comparison(
     dynamic_mesh_resolution: int | None,
     include_prior_free: bool,
 ) -> pd.DataFrame:
-    """运行静态与动态方法对比实验。"""
+    """运行静态方法与当前主动态方法的对比实验。"""
     gt_mesh = _load_gt_mesh(gt_mesh_path)
-    methods = ["静态基线", "静态增强", "动态共享", "动态共享-参考对应正则", "动态共享-CPD对应点"]
+    methods = ["静态基线", "静态增强", "动态共享-全局基残差"]
     if include_prior_free:
         methods.append("动态共享-无先验4D场")
     results: list[dict[str, float | int | str]] = []
@@ -525,11 +525,11 @@ def run_cpd_ablation(
     periodicity_weight: float | None,
     deformation_weight: float | None,
 ) -> pd.DataFrame:
-    """运行 CPD-Field 关键损失项消融实验。"""
+    """运行当前主方法关键损失项消融实验。"""
     gt_mesh = _load_gt_mesh(gt_mesh_path)
     ablations: list[tuple[str, dict[str, bool | float | None]]] = [
         (
-            "CPD-Field",
+            "动态共享-全局基残差",
             {
                 "normal_weight": normal_weight,
                 "temporal_weight": temporal_weight,
@@ -539,18 +539,18 @@ def run_cpd_ablation(
                 "deformation_weight": deformation_weight,
             },
         ),
-        ("CPD-Field w/o 周期边界", {"disable_periodicity": True}),
-        ("CPD-Field w/o 置信度加权", {"disable_confidence_weighting": True}),
-        ("CPD-Field w/o 法向约束", {"disable_normal": True}),
-        ("CPD-Field w/o 二阶时间正则", {"disable_acceleration": True}),
-        ("CPD-Field w/o 相位一致性", {"disable_phase_consistency": True}),
+        ("动态共享-全局基残差 w/o 周期边界", {"disable_periodicity": True}),
+        ("动态共享-全局基残差 w/o 置信度加权", {"disable_confidence_weighting": True}),
+        ("动态共享-全局基残差 w/o 法向约束", {"disable_normal": True}),
+        ("动态共享-全局基残差 w/o 二阶时间正则", {"disable_acceleration": True}),
+        ("动态共享-全局基残差 w/o 相位一致性", {"disable_phase_consistency": True}),
     ]
 
     results: list[dict[str, float | int | str]] = []
     for label, ablation in ablations:
         print(f">>> 运行消融：{label}")
         config = _build_config(
-            method="动态共享-CPD对应点",
+            method="动态共享-全局基残差",
             mode=mode,
             dynamic_train_steps=dynamic_train_steps,
             dynamic_mesh_resolution=dynamic_mesh_resolution,
@@ -565,7 +565,7 @@ def run_cpd_ablation(
 
     df = pd.DataFrame(results)
     df.to_csv(experiment_dir / "cpd_ablation.csv", index=False)
-    print(f"[Experiments] CPD-Field 消融结果已写入 {experiment_dir / 'cpd_ablation.csv'}")
+    print(f"[Experiments] 主方法消融结果已写入 {experiment_dir / 'cpd_ablation.csv'}")
     return df
 
 
@@ -583,7 +583,7 @@ def emit_tables(df: pd.DataFrame, experiment_dir: Path, stem: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="运行 4D-UMS 静态/动态模型对比实验")
     parser.add_argument("--mode", choices=["fast-dev", "dynamic-detail", "full-paper"], default="fast-dev", help="实验运行模式：快速调试、动态细节诊断或正式论文配置")
-    parser.add_argument("--experiment-set", choices=["method-comparison", "cpd-ablation", "both"], default="both", help="运行方法对比、CPD-Field 消融，或两者都跑")
+    parser.add_argument("--experiment-set", choices=["method-comparison", "cpd-ablation", "both"], default="both", help="运行方法对比、主方法消融（兼容旧名称 cpd-ablation），或两者都跑")
     parser.add_argument("--out-dir", type=str, default=str(DEFAULT_EXPERIMENT_ROOT), help="实验归档根目录；每次运行会在该目录下创建独立子目录")
     parser.add_argument("--monitor-path", type=str, default=str(DEFAULT_MONITOR_PATH), help="监测流 NPZ 路径")
     parser.add_argument("--scanner-path", type=str, default=str(DEFAULT_SCANNER_PATH), help="扫描流 NPZ 路径")
@@ -592,12 +592,12 @@ def main() -> None:
     parser.add_argument("--dynamic-train-steps", type=int, default=None, help="覆盖动态模型训练步数")
     parser.add_argument("--dynamic-mesh-resolution", type=int, default=None, help="覆盖动态模型导出网格分辨率")
     parser.add_argument("--include-prior-free", action="store_true", help="在方法对比中额外加入无先验 4D 场动态建模分支")
-    parser.add_argument("--normal-weight", type=float, default=None, help="覆盖 CPD 对应点变体法向约束权重")
-    parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖 CPD 对应点变体一阶时间平滑权重")
-    parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖 CPD 对应点变体二阶时间正则权重")
-    parser.add_argument("--phase-consistency-weight", type=float, default=None, help="覆盖 CPD 对应点变体相位一致性权重")
-    parser.add_argument("--periodicity-weight", type=float, default=None, help="覆盖 CPD 对应点变体周期边界权重")
-    parser.add_argument("--deformation-weight", type=float, default=None, help="覆盖 CPD 对应点变体形变幅度正则权重")
+    parser.add_argument("--normal-weight", type=float, default=None, help="覆盖主方法法向约束权重")
+    parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖主方法一阶时间平滑权重")
+    parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖主方法二阶时间正则权重")
+    parser.add_argument("--phase-consistency-weight", type=float, default=None, help="覆盖主方法相位一致性权重")
+    parser.add_argument("--periodicity-weight", type=float, default=None, help="覆盖主方法周期边界权重")
+    parser.add_argument("--deformation-weight", type=float, default=None, help="覆盖主方法形变幅度正则权重")
     args = parser.parse_args()
 
     out_root = Path(args.out_dir)

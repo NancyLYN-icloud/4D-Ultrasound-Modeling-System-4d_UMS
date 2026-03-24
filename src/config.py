@@ -210,6 +210,12 @@ class DynamicModelConfig:
     residual_locality_global_budget_scale: float = 0.15
     residual_wave_band_concentration_weight: float = 0.0
     residual_wave_band_target_std: float = 0.12
+    residual_wave_direction_weight: float = 0.0
+    residual_wave_direction_band_width: float = 0.10
+    residual_wave_direction_tangential_weight: float = 0.25
+    wave_band_data_term_boost_weight: float = 0.0
+    wave_band_data_term_band_width: float = 0.10
+    wave_band_data_term_support_power: float = 2.0
     residual_global_ratio_weight: float = 0.0
     residual_global_ratio_target: float = 0.85
     residual_global_ratio_support_aware: bool = False

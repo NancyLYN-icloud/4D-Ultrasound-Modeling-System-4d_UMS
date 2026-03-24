@@ -281,6 +281,16 @@ class CanonicalPhaseDeformationFieldReconstructor:
         return (tri_offsets * barycentric[None, :, :, None]).sum(axis=2).astype(np.float32)
 
     @staticmethod
+    def _sample_reference_values_numpy(
+        vertex_values: np.ndarray,
+        base_faces: np.ndarray,
+        face_indices: np.ndarray,
+        barycentric: np.ndarray,
+    ) -> np.ndarray:
+        tri_values = vertex_values[base_faces[face_indices]]
+        return (tri_values * barycentric).sum(axis=1).astype(np.float32)
+
+    @staticmethod
     def _build_edges(faces: np.ndarray) -> np.ndarray:
         edges = np.vstack([
             faces[:, [0, 1]],
@@ -380,6 +390,25 @@ class CanonicalPhaseDeformationFieldReconstructor:
         coord_span = max(coord_max - coord_min, 1e-6)
         normalized = (coordinates - coord_min) / coord_span
         return normalized.astype(np.float32)
+
+    @staticmethod
+    def _principal_axis_frame(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if len(vertices) == 0:
+            empty_scalar = np.empty((0,), dtype=np.float32)
+            empty_vector = np.empty((0, 3), dtype=np.float32)
+            return empty_scalar, np.zeros((3,), dtype=np.float32), empty_vector
+        centered = vertices - np.mean(vertices, axis=0, keepdims=True)
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        axis = vh[0].astype(np.float32)
+        coordinates = centered @ axis
+        coord_min = float(np.min(coordinates))
+        coord_max = float(np.max(coordinates))
+        coord_span = max(coord_max - coord_min, 1e-6)
+        normalized = ((coordinates - coord_min) / coord_span).astype(np.float32)
+        radial_vectors = centered - coordinates[:, None] * axis[None, :]
+        radial_norm = np.linalg.norm(radial_vectors, axis=1, keepdims=True)
+        radial_directions = radial_vectors / np.clip(radial_norm, 1e-6, None)
+        return normalized, axis, radial_directions.astype(np.float32)
 
     def _propagate_unsupported_displacements(
         self,
@@ -1401,7 +1430,17 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
         bootstrap_residual_reference_offsets = torch.from_numpy(bootstrap_residual_reference_offsets_np).to(self.device)
         coeff_targets = torch.from_numpy(coeff_targets_np).to(self.device)
         edges = torch.from_numpy(edges_np).to(self.device)
-        base_vertex_axis_coordinates = torch.from_numpy(self._principal_axis_coordinates(base_vertices_np)).to(self.device)
+        base_axis_coordinates_np, base_axis_direction_np, base_radial_directions_np = self._principal_axis_frame(base_vertices_np)
+        reference_axis_coordinates_np = self._sample_reference_values_numpy(
+            base_axis_coordinates_np,
+            base_faces_np,
+            face_indices_np,
+            barycentric_np,
+        )
+        base_vertex_axis_coordinates = torch.from_numpy(base_axis_coordinates_np).to(self.device)
+        base_axis_direction = torch.from_numpy(base_axis_direction_np).to(self.device)
+        base_vertex_radial_directions = torch.from_numpy(base_radial_directions_np).to(self.device)
+        reference_axis_coordinates = torch.from_numpy(reference_axis_coordinates_np).to(self.device)
         phase_points = [torch.from_numpy(item.points).to(self.device) for item in observations]
         phase_normals = [torch.from_numpy(item.normals).to(self.device) for item in observations]
         phase_point_weights = [torch.from_numpy(item.point_weights).to(self.device) for item in observations]
@@ -1473,22 +1512,35 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
             global_vertices = base_vertices + global_vertex_offsets
             vertex_offsets = global_vertex_offsets + residual_vertex_offsets
             vertices = base_vertices + vertex_offsets
+            residual_vertex_energy = residual_vertex_offsets.pow(2).mean(dim=-1)
+            wave_band_weights = supported_vertex_weights * residual_vertex_energy
+            wave_band_weight_sum = wave_band_weights.sum().clamp_min(1e-6)
+            wave_band_center = (wave_band_weights * base_vertex_axis_coordinates).sum() / wave_band_weight_sum
             global_samples = None
             if cfg.bootstrap_teacher_global_only:
                 global_samples, _ = self._sample_surface_from_vertices(global_vertices, base_faces, face_indices, barycentric)
             pred_samples, pred_normals = self._sample_surface_from_vertices(vertices, base_faces, face_indices, barycentric)
 
+            wave_data_band_width = max(float(cfg.wave_band_data_term_band_width), 1e-3)
+            wave_data_gate = torch.exp(
+                -0.5 * ((reference_axis_coordinates - wave_band_center) / wave_data_band_width).pow(2)
+            )
+            wave_data_support = support_weights.clamp(0.0, 1.0).pow(float(cfg.wave_band_data_term_support_power))
+            wave_data_boost = 1.0 + float(cfg.wave_band_data_term_boost_weight) * wave_data_gate * wave_data_support
+            boosted_support_weights = support_weights * wave_data_boost
+            boosted_support_sum = boosted_support_weights.sum().clamp_min(1e-6)
+
             distances = torch.cdist(pred_samples, target_points)
             pred_to_target, pred_nn = distances.min(dim=1)
             target_to_pred, _ = distances.min(dim=0)
             surface_loss = phase_weight * (
-                ((support_weights * pred_to_target.pow(2)).sum() / support_sum)
+                ((boosted_support_weights * pred_to_target.pow(2)).sum() / boosted_support_sum)
                 + ((target_point_weights * target_to_pred.pow(2)).sum() / target_point_weight_sum)
             )
 
             nearest_target_normals = target_normals[pred_nn]
             normal_alignment = 1.0 - torch.abs(torch.sum(pred_normals * nearest_target_normals, dim=-1))
-            normal_loss = phase_weight * ((support_weights * normal_alignment).sum() / support_sum)
+            normal_loss = phase_weight * ((boosted_support_weights * normal_alignment).sum() / boosted_support_sum)
             supported_pred_centroid = (pred_samples * support_weights.unsqueeze(-1)).sum(dim=0) / support_sum
             centroid_loss = phase_weight * ((supported_pred_centroid - target_weighted_centroid) ** 2).mean()
             spatial_loss = ((residual_vertex_offsets[edges[:, 0]] - residual_vertex_offsets[edges[:, 1]]) ** 2).mean()
@@ -1549,7 +1601,6 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
                 projection_offsets.reshape(-1),
             )
             residual_basis_projection_loss = basis_projection.pow(2).mean() / float(max(len(base_vertices_np), 1))
-            residual_vertex_energy = residual_vertex_offsets.pow(2).mean(dim=-1)
             bootstrap_residual_energy = bootstrap_residual_vertex_offsets.pow(2).mean(dim=-1)
             if cfg.residual_global_ratio_support_aware:
                 global_energy = (supported_vertex_weights * global_vertex_offsets.pow(2).mean(dim=-1)).sum() / supported_vertex_sum
@@ -1569,9 +1620,6 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
             residual_locality_loss = (
                 (supported_vertex_weights * residual_locality_excess.pow(2)).sum() / supported_vertex_sum
             )
-            wave_band_weights = supported_vertex_weights * residual_vertex_energy
-            wave_band_weight_sum = wave_band_weights.sum().clamp_min(1e-6)
-            wave_band_center = (wave_band_weights * base_vertex_axis_coordinates).sum() / wave_band_weight_sum
             wave_band_variance = (
                 wave_band_weights * (base_vertex_axis_coordinates - wave_band_center).pow(2)
             ).sum() / wave_band_weight_sum
@@ -1579,6 +1627,25 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
             residual_wave_band_concentration_loss = F.relu(
                 residual_wave_band_std - float(cfg.residual_wave_band_target_std)
             ).pow(2)
+            wave_direction_width = max(float(cfg.residual_wave_direction_band_width), 1e-3)
+            wave_direction_gate = torch.exp(
+                -0.5 * ((base_vertex_axis_coordinates - wave_band_center) / wave_direction_width).pow(2)
+            )
+            wave_direction_weights = supported_vertex_weights * wave_direction_gate
+            wave_direction_weight_sum = wave_direction_weights.sum().clamp_min(1e-6)
+            axial_component = torch.einsum("vj,j->v", residual_vertex_offsets, base_axis_direction)
+            radial_component = (residual_vertex_offsets * base_vertex_radial_directions).sum(dim=-1)
+            residual_total_energy = residual_vertex_offsets.pow(2).sum(dim=-1)
+            tangential_energy = (residual_total_energy - axial_component.pow(2) - radial_component.pow(2)).clamp_min(0.0)
+            wave_direction_total_energy = (wave_direction_weights * residual_total_energy).sum().clamp_min(1e-6)
+            wave_direction_axial_ratio = (wave_direction_weights * axial_component.pow(2)).sum() / wave_direction_total_energy
+            wave_direction_outward_ratio = (wave_direction_weights * F.relu(radial_component).pow(2)).sum() / wave_direction_total_energy
+            wave_direction_tangential_ratio = (wave_direction_weights * tangential_energy).sum() / wave_direction_total_energy
+            residual_wave_direction_loss = (
+                wave_direction_axial_ratio
+                + wave_direction_outward_ratio
+                + float(cfg.residual_wave_direction_tangential_weight) * wave_direction_tangential_ratio
+            )
             ratio_denominator = torch.maximum(global_energy, 0.5 * bootstrap_global_energy).clamp_min(1e-6)
             residual_global_ratio = residual_energy / ratio_denominator
             residual_global_ratio_loss = F.relu(
@@ -1709,6 +1776,7 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
                 + cfg.residual_basis_projection_weight * residual_basis_projection_loss
                 + cfg.residual_locality_weight * residual_locality_loss
                 + cfg.residual_wave_band_concentration_weight * residual_wave_band_concentration_loss
+                + cfg.residual_wave_direction_weight * residual_wave_direction_loss
                 + cfg.residual_global_ratio_weight * residual_global_ratio_loss
                 + cfg.unsupported_anchor_weight * unsupported_anchor_loss
                 + cfg.unsupported_laplacian_weight * unsupported_laplacian_loss
@@ -1746,6 +1814,11 @@ class SharedTopologyGlobalBasisResidualReconstructor(CanonicalPhaseDeformationFi
                     f"res_locality={float(residual_locality_loss.detach().cpu()):.6f} "
                     f"res_band_std={float(residual_wave_band_std.detach().cpu()):.6f} "
                     f"res_band_loss={float(residual_wave_band_concentration_loss.detach().cpu()):.6f} "
+                    f"res_dir={float(residual_wave_direction_loss.detach().cpu()):.6f} "
+                    f"res_dir_axial={float(wave_direction_axial_ratio.detach().cpu()):.6f} "
+                    f"res_dir_out={float(wave_direction_outward_ratio.detach().cpu()):.6f} "
+                    f"res_dir_tan={float(wave_direction_tangential_ratio.detach().cpu()):.6f} "
+                    f"wave_data_boost={float(wave_data_boost.mean().detach().cpu()):.6f} "
                     f"res_ratio={float(residual_global_ratio.detach().cpu()):.6f} "
                     f"res_ratio_loss={float(residual_global_ratio_loss.detach().cpu()):.6f} "
                     f"boot_scale={bootstrap_schedule_scale:.3f} "

@@ -169,6 +169,12 @@ def main() -> None:
     parser.add_argument("--residual-locality-global-budget-scale", type=float, default=None)
     parser.add_argument("--residual-wave-band-concentration-weight", type=float, default=None)
     parser.add_argument("--residual-wave-band-target-std", type=float, default=None)
+    parser.add_argument("--residual-wave-direction-weight", type=float, default=None)
+    parser.add_argument("--residual-wave-direction-band-width", type=float, default=None)
+    parser.add_argument("--residual-wave-direction-tangential-weight", type=float, default=None)
+    parser.add_argument("--wave-band-data-term-boost-weight", type=float, default=None)
+    parser.add_argument("--wave-band-data-term-band-width", type=float, default=None)
+    parser.add_argument("--wave-band-data-term-support-power", type=float, default=None)
     parser.add_argument("--residual-global-ratio-weight", type=float, default=None)
     parser.add_argument("--residual-global-ratio-target", type=float, default=None)
     parser.add_argument("--residual-global-ratio-support-aware", action=argparse.BooleanOptionalAction, default=None)
@@ -242,6 +248,12 @@ def main() -> None:
         "residual_locality_global_budget_scale": args.residual_locality_global_budget_scale,
         "residual_wave_band_concentration_weight": args.residual_wave_band_concentration_weight,
         "residual_wave_band_target_std": args.residual_wave_band_target_std,
+        "residual_wave_direction_weight": args.residual_wave_direction_weight,
+        "residual_wave_direction_band_width": args.residual_wave_direction_band_width,
+        "residual_wave_direction_tangential_weight": args.residual_wave_direction_tangential_weight,
+        "wave_band_data_term_boost_weight": args.wave_band_data_term_boost_weight,
+        "wave_band_data_term_band_width": args.wave_band_data_term_band_width,
+        "wave_band_data_term_support_power": args.wave_band_data_term_support_power,
         "residual_global_ratio_weight": args.residual_global_ratio_weight,
         "residual_global_ratio_target": args.residual_global_ratio_target,
         "residual_global_ratio_support_aware": args.residual_global_ratio_support_aware,

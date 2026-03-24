@@ -2,17 +2,17 @@
 
 本项目当前聚焦于面向自由手胃部超声的时空一致重建，核心主线已经从早期的“多周期平均法”演化为：
 
-监测信号 -> 非线性相位标准化 -> 标准相位分箱点云构建 -> 静态逐相位重建 / `CPD-Field` 连续动态共享重建 -> 相位级评估与按时间轴导出的 4D 序列评估。
+监测信号 -> 非线性相位标准化 -> 标准相位分箱点云构建 -> 静态逐相位重建 / `动态共享-全局基残差` 重建 -> 相位级评估与按时间轴导出的 4D 序列评估。
 
 当前推荐作为论文主模型的方法是：
 
-- `CPD-Field`（Canonical Phase-Deformation Field）
+- `动态共享-全局基残差`（`shared_topology_global_basis_residual`）
 
 其核心思想是：
 
-- 用一个标准 signed-distance field 表示胃部静态标准形态。
-- 用一个相位条件形变场表示随标准相位变化的动态位移。
-- 用法向一致性、相位一致采样、二阶时间平滑、周期边界约束与置信度加权联合优化。
+- 用共享拓扑的基准网格表示静态参考形态。
+- 用低秩全局运动基表示跨相位的大尺度周期运动。
+- 用相位条件残差场补充局部动态细节，并配合 correspondence 时序调度、残差正则与置信度加权联合优化。
 
 ## 当前项目能力
 
@@ -21,10 +21,10 @@
 1. 监测流周期检测与非线性相位标准化。
 2. 基于标准相位分箱的带质量摘要点云构建。
 3. 逐相位静态隐式表面重建。
-4. `CPD-Field` 动态共享隐式重建。
+4. `动态共享-全局基残差` 主方法重建。
 5. 基于扫描时间戳的逐帧 4D 时间轴网格导出。
 6. Chamfer Distance、HD95、时间平滑度、水密比例等实验指标输出。
-7. 方法对比实验与 `CPD-Field` 消融实验脚本。
+7. 方法对比实验与主方法消融实验脚本。
 
 ## 目录结构
 
@@ -38,10 +38,10 @@
 - [src/modeling/surface_reconstruction.py](src/modeling/surface_reconstruction.py)：逐相位静态隐式表面重建。
 - [src/modeling/canonical_field.py](src/modeling/canonical_field.py)：标准形状隐式场。
 - [src/modeling/deformation_field.py](src/modeling/deformation_field.py)：相位条件形变场。
-- [src/modeling/dynamic_surface_reconstruction.py](src/modeling/dynamic_surface_reconstruction.py)：`CPD-Field` 动态共享重建。
+- [src/modeling/dynamic_surface_reconstruction.py](src/modeling/dynamic_surface_reconstruction.py)：动态共享重建，当前主线为 `动态共享-全局基残差`。
 - [src/modeling/metrics.py](src/modeling/metrics.py)：CD、HD95、时间平滑度等指标。
 - [src/pipelines/multicycle_reconstruction.py](src/pipelines/multicycle_reconstruction.py)：端到端主流程。
-- [scripts/run_experiments.py](scripts/run_experiments.py)：方法对比与 `CPD-Field` 消融实验入口。
+- [scripts/run_experiments.py](scripts/run_experiments.py)：方法对比与主方法消融实验入口。
 - [experiments/METHOD_FRAMEWORK.md](experiments/METHOD_FRAMEWORK.md)：方法框架文档。
 - [experiments/DESIGN.md](experiments/DESIGN.md)：实验设计文档。
 
@@ -83,7 +83,7 @@ python scripts/run_experiments.py --mode fast-dev --experiment-set both
 python scripts/run_experiments.py --mode full-paper --experiment-set method-comparison
 ```
 
-### 4. 运行正式 `CPD-Field` 消融
+### 4. 运行正式主方法消融
 
 ```bash
 python scripts/run_experiments.py --mode full-paper --experiment-set cpd-ablation
@@ -113,32 +113,31 @@ export UMS_DATA_ROOT=/your/data/root
 `scripts/run_experiments.py` 当前支持两套模式：
 
 - `fast-dev`：快速调试模式，降低训练步数、采样规模和网格分辨率，用于验证实验链路与结果趋势。
-- `dynamic-detail`：动态细节诊断模式，提升 `CPD-Field` 训练预算、采样规模和网格分辨率，并减弱过强的时间平滑约束，用于检查动态网格细节是否被过度抹平。
+- `dynamic-detail`：动态细节诊断模式，提升 `动态共享-全局基残差` 训练预算、采样规模和网格分辨率，并减弱过强的时间平滑约束，用于检查动态网格细节是否被过度抹平。
 - `full-paper`：论文正式实验模式，使用更高训练预算生成正式对比结果。
 
 同时支持两类实验集：
 
-- `method-comparison`：静态基线、静态增强、动态共享三类方法对比。
-- `cpd-ablation`：`CPD-Field` 关键损失项消融。
+- `method-comparison`：静态基线、静态增强与当前主方法三类方法对比。
+- `cpd-ablation`：当前主方法关键损失项消融，保留旧实验集名称以兼容历史命令。
 
-## 当前主模型：CPD-Field
+## 当前主模型：动态共享-全局基残差
 
-`CPD-Field` 在当前代码中对应：
+`动态共享-全局基残差` 在当前代码中对应：
 
-- 标准场：[src/modeling/canonical_field.py](src/modeling/canonical_field.py)
-- 形变场：[src/modeling/deformation_field.py](src/modeling/deformation_field.py)
+- 系数/残差网络：[src/modeling/deformation_field.py](src/modeling/deformation_field.py)
 - 动态重建器：[src/modeling/dynamic_surface_reconstruction.py](src/modeling/dynamic_surface_reconstruction.py)
+- 方法默认配置：[scripts/run_experiments.py](scripts/run_experiments.py)
 
 目前已实现的关键损失项包括：
 
 - 表面拟合损失
 - 法向一致性损失
-- Eikonal 正则
-- 一阶时间平滑损失
-- 二阶时间加速度损失
-- 相位邻域一致性损失
-- 周期边界闭环损失
-- 形变幅度约束
+- 质心一致性与空间平滑损失
+- 基系数 bootstrap / 时间 / 加速度 / 周期性正则
+- 残差均值与残差基投影约束
+- unsupported 区域 anchor / laplacian 正则
+- 全局分支 correspondence 时序约束与调度
 - 置信度感知的相位采样与损失加权
 
 ## 输出结果
@@ -154,7 +153,7 @@ export UMS_DATA_ROOT=/your/data/root
 - 逐帧时间轴动态网格 `.ply`（启用 `dynamic_model.export_timeline_meshes` 时）
 - 逐帧时间轴动态网格摘要 `dynamic_timeline_mesh_summary.csv`
 - 方法对比结果 `method_comparison.csv/.tex`
-- `CPD-Field` 消融结果 `cpd_ablation.csv/.tex`
+- 主方法消融结果 `cpd_ablation.csv/.tex`（沿用历史文件名）
 
 默认情况下，`scripts/run_experiments.py` 会把所有实验输出统一写入 `/home/liuyanan/data/Research_Data/4D-UMS/experiments` 下，并为每次运行自动创建独立归档目录，例如：
 
@@ -187,6 +186,6 @@ export UMS_DATA_ROOT=/your/data/root
 
 1. 非线性相位标准化
 2. 置信度感知观测融合
-3. `CPD-Field` 动态共享建模
+3. `动态共享-全局基残差` 动态建模
 
 这三部分已经在代码、文档和实验脚本中形成了相互对应的结构，后续可以围绕它们继续强化方法与实验。

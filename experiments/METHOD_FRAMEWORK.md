@@ -64,46 +64,40 @@
 
 这是 [src/preprocessing/pointcloud_builder.py](../src/preprocessing/pointcloud_builder.py) 最自然的强化方向。
 
-### 贡献 C：基于 CPD-Field 的时空耦合隐式表面建模
+### 贡献 C：基于共享拓扑全局基残差的时空耦合表面建模
 
-把“每个相位独立重建一个网格”的策略升级为统一的时空模型，在空间坐标与相位域上联合建模器官表面。当前代码中这条主模型已经具体化为：
+把“每个相位独立重建一个网格”的策略升级为共享拓扑的时空模型，在网格顶点域与相位域上联合建模器官表面。当前代码中这条主模型已经具体化为：
 
-- `CPD-Field`（Canonical Phase-Deformation Field）
+- `动态共享-全局基残差`（`shared_topology_global_basis_residual`）
 
 其核心思想是：
 
-- 用一个标准 signed-distance field 表示静态胃部形态
-- 用一个相位条件形变场表示标准相位域上的动态位移
-- 用法向一致性、相位一致采样、二阶时间平滑和周期边界约束联合优化
+- 用一个共享拓扑基准网格表示静态参考形态
+- 用低秩全局运动基表示跨相位的大尺度周期运动
+- 用相位条件残差场补充局部动态细节，并通过 correspondence 调度与残差正则保持时序稳定
 
 形式化表达为：
 
 $$
-S_0(x) = \text{canonical signed distance field}
+V(\phi) = V_0 + \bar{\Delta} + \sum_{r=1}^{R} \alpha_r(\phi) B_r + R_\theta(V_0, \phi)
 $$
 
-$$
-D_\theta(x, \phi) = \text{phase-conditioned deformation field}
-$$
+其中 $V_0$ 为共享基准网格，$\bar{\Delta}$ 为全局平均位移，$B_r$ 为第 $r$ 个全局运动基，$\alpha_r(\phi)$ 为相位系数，$R_\theta$ 为相位条件局部残差场。
 
-$$
-S(x, \phi) = S_0\big(x + D_\theta(x, \phi)\big)
-$$
-
-这种表达兼顾了解剖可解释性与训练可控性，明显优于单纯“逐相位独立训练”的方法。
+这种表达兼顾了拓扑稳定性、动态细节承载能力与训练可控性，明显优于单纯“逐相位独立训练”的方法。
 
 ## 4. 建议的新主流程
 
 升级后的主流程建议表述为：
 
-监测信号 -> 标准相位对齐 -> 置信度感知点观测 -> CPD-Field 动态建模 -> 时空连续网格序列 -> 几何与临床分析。
+监测信号 -> 标准相位对齐 -> 置信度感知点观测 -> 共享拓扑全局基残差动态建模 -> 时空连续网格序列 -> 几何与临床分析。
 
 按模块拆解后，目标架构应包括：
 
 1. 监测信号编码模块
 2. 周期标准化模块
 3. 观测置信度估计模块
-4. 时空隐式重建模块
+4. 共享拓扑动态重建模块
 5. 解剖约束模块
 6. 评估与可视化模块
 
@@ -177,87 +171,57 @@ $$
 
 其中 $\rho$ 可采用 L1 或鲁棒损失。
 
-### 5.4 CPD-Field：标准形状与相位条件形变场
+### 5.4 共享拓扑全局基残差主模型
 
-当前主模型采用 `CPD-Field`。其核心公式为：
-
-$$
-S_0(x) = \text{标准形状的 signed distance field}
-$$
+当前主模型采用 `动态共享-全局基残差`。其核心公式为：
 
 $$
-D_\theta(x, \phi) = \text{相位条件形变场}
-$$
-
-$$
-S(x, \phi) = S_0(x + D_\theta(x, \phi))
-$$
-
-这种写法的优势是：
-
-- 将静态形态与动态运动解耦
-- 便于解释蠕动幅度与传播特征
-- 便于在形变空间中加入周期性与高阶时间正则
-
-为增强相位表达能力，相位输入可以采用周期编码：
-
-$$
-\gamma(\phi) = [\sin(2\pi \phi), \cos(2\pi \phi), \ldots, \sin(2K\pi \phi), \cos(2K\pi \phi)]
-$$
-
-随后以 $(x, \gamma(\phi))$ 共同作为形变场输入。
-
-### 5.5 正则项设计
-
-`CPD-Field` 的总损失可写为：
-
-$$
-\mathcal{L} = \mathcal{L}_{obs} + \lambda_{nor} \mathcal{L}_{nor} + \lambda_{eik} \mathcal{L}_{eik} + \lambda_{tmp} \mathcal{L}_{tmp} + \lambda_{acc} \mathcal{L}_{acc} + \lambda_{ph} \mathcal{L}_{ph} + \lambda_{per} \mathcal{L}_{per} + \lambda_{def} \mathcal{L}_{def}
+V(\phi) = V_0 + \bar{\Delta} + \sum_{r=1}^{R} \alpha_r(\phi) B_r + R_\theta(V_0, \phi)
 $$
 
 其中：
 
-- $\mathcal{L}_{obs}$：置信度加权的数据拟合损失
-- $\mathcal{L}_{eik}$：signed-distance 正则
-- $\mathcal{L}_{nor}$：法向一致性损失
-- $\mathcal{L}_{tmp}$：一阶时间平滑损失
-- $\mathcal{L}_{acc}$：二阶时间加速度正则
-- $\mathcal{L}_{ph}$：相位邻域一致性损失
-- $\mathcal{L}_{per}$：周期边界闭环损失
-- $\mathcal{L}_{def}$：形变幅度约束
+- $V_0$ 为共享拓扑基准网格
+- $\bar{\Delta}$ 为全局平均位移
+- $B_r$ 为低秩全局运动基
+- $\alpha_r(\phi)$ 为相位条件全局系数
+- $R_\theta(V_0, \phi)$ 为相位条件局部残差场
 
-其中，观测损失采用置信度加权：
+这种写法的优势是：
+
+- 将大尺度周期运动与局部细节残差解耦
+- 保持共享拓扑，便于控制时序稳定性与网格可解释性
+- 便于针对 unsupported 区域、correspondence 时序和局部残差强度施加结构化约束
+
+### 5.5 正则项设计
+
+当前主模型的总损失可写为：
 
 $$
-\mathcal{L}_{obs} = \sum_i c_i \left| S\big(p_i, \phi_i\big) \right|
+\mathcal{L} = \mathcal{L}_{surf} + \lambda_{nor}\mathcal{L}_{nor} + \lambda_{cen}\mathcal{L}_{cen} + \lambda_{sp}\mathcal{L}_{sp} + \lambda_{boot}\mathcal{L}_{boot} + \lambda_{coef}\mathcal{L}_{coef} + \lambda_{res}\mathcal{L}_{res} + \lambda_{corr}\mathcal{L}_{corr} + \lambda_{per}\mathcal{L}_{per}
+$$
+
+其中：
+
+- $\mathcal{L}_{surf}$：置信度加权的表面拟合损失
+- $\mathcal{L}_{nor}$：法向一致性损失
+- $\mathcal{L}_{cen}$：质心一致性损失
+- $\mathcal{L}_{sp}$：残差场空间平滑损失
+- $\mathcal{L}_{boot}$：全局基与残差的 bootstrap 对齐损失
+- $\mathcal{L}_{coef}$：全局系数的时间、加速度与周期性正则
+- $\mathcal{L}_{res}$：残差均值、残差基投影与 unsupported 区域正则
+- $\mathcal{L}_{corr}$：global-only correspondence 时序约束
+- $\mathcal{L}_{per}$：周期边界一致性约束
+
+其中，观测损失的核心形式为：
+
+$$
+\mathcal{L}_{surf} = \sum_i c_i \, d\big(\hat{p}_i(\phi_i), p_i\big)^2
 $$
 
 这里 $c_i$ 由点云质量估计得到；在当前代码实现中，相位级训练权重由平均点云置信度和切片提取率共同决定。
 
-一阶时间正则可写为：
-
-$$
-\mathcal{L}_{tmp} = \mathbb{E}_{x, \phi} \left[ \left\| D_\theta(x, \phi + \Delta \phi) - D_\theta(x, \phi) \right\|_2^2 \right]
-$$
-
-二阶时间正则可写为：
-
-$$
-\mathcal{L}_{acc} = \mathbb{E}_{x, \phi} \left[ \left\| D_\theta(x, \phi + \Delta \phi) - 2D_\theta(x, \phi) + D_\theta(x, \phi - \Delta \phi) \right\|_2^2 \right]
-$$
-
-周期边界闭环约束可写为：
-
-$$
-\mathcal{L}_{per} = \mathbb{E}_x \left[ \left\| D_\theta(x, 0) - D_\theta(x, 1) \right\|_2^2 \right]
-$$
-
-必要时，还可加入边界导数连续性项，约束 $\phi = 0$ 与 $\phi = 1$ 两端邻域的变化趋势一致。
-
-解剖先验在后续版本中可以进一步考虑：
-
-- 局部胃壁位移有界
-- 相位域上的体积变化平滑
+一阶与二阶时间正则施加在全局基系数和相位 correspondence 上，用于抑制跨相位高频抖动；周期边界约束用于保证完整蠕动周期首尾连续；unsupported 区域正则则用于防止低支持区域出现不稳定漂移。
 - 通过形变正则与自交惩罚维持拓扑稳定
 
 ### 5.6 网格提取与临床可解释输出
@@ -311,7 +275,7 @@ $$
 
 - WeightedPointObservation
 
-### 第三步：用 CPD-Field 替换逐相位独立重建
+### 第三步：用共享拓扑全局基残差替换逐相位独立重建
 
 当前代码已经完成了这一方向的第一版实现，核心文件为：
 
@@ -348,10 +312,10 @@ $$
 
 1. 线性相位归一化 vs 非线性相位标准化
 2. 无置信度加权 vs 有置信度加权
-3. 独立逐相位重建 vs 共享 CPD-Field 模型
-4. `CPD-Field` 去掉周期边界约束 vs 完整模型
-5. `CPD-Field` 去掉置信度加权 vs 完整模型
-6. `CPD-Field` 去掉法向一致性 vs 完整模型
+3. 独立逐相位重建 vs 共享拓扑全局基残差模型
+4. `动态共享-全局基残差` 去掉周期边界约束 vs 完整模型
+5. `动态共享-全局基残差` 去掉置信度加权 vs 完整模型
+6. `动态共享-全局基残差` 去掉法向一致性 vs 完整模型
 7. 单周期输入 vs 多周期输入
 
 这组消融能直接支撑方法主贡献。
@@ -367,7 +331,7 @@ $$
 展示不同原始周期具有不等时长和不等速蠕动时，如何被对齐到统一标准相位域。
 
 3. 重建对比图
-对比基线的逐相位独立重建与 `CPD-Field` 时空一致重建的差异。
+对比基线的逐相位独立重建与当前主方法时空一致重建的差异。
 
 4. 误差热力图
 在合成数据基准上渲染 mesh-to-GT 的表面误差分布。
@@ -380,7 +344,7 @@ $$
 如果实现时间有限，最值得优先投入的顺序是：
 
 1. 非线性相位标准化
-2. 共享式 `CPD-Field` 动态模型
+2. 共享式 `动态共享-全局基残差` 动态模型
 3. 置信度感知观测加权
 4. 解剖先验正则
 
@@ -396,6 +360,6 @@ $$
 
 之后的第二个关键里程碑应是：
 
-- 用 `CPD-Field` 替代逐相位独立重建
+- 用 `动态共享-全局基残差` 替代逐相位独立重建
 
 这两个创新点的组合，是从当前工程原型走向顶会/顶刊方法论文最可信的路径。
