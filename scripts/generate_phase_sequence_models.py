@@ -202,7 +202,7 @@ def _phase_wave(
 
     contraction = (
         cycle_amp * (0.72 * lead + 0.28 * trail - 0.08 * recovery) * distal_gain * body_gate * pylorus_focus
-        + 0.09 * onset * mid_body_seed
+        + 0.09 * cycle_amp * mid_body_seed
         + 0.18 * pyloric_hold * pylorus_peak
     )
     contraction = np.clip(contraction, 0.0, 0.84)
@@ -221,16 +221,18 @@ def _deform_reference_points(
     model: regen.GastricReferenceModel,
     phase: float,
     observation_rotation: np.ndarray,
+    narrowing_scale: float,
 ) -> tuple[np.ndarray, float, float]:
     axis = canonical_points[:, 0]
     s = (axis - axis.min()) / max(axis.max() - axis.min(), 1e-8)
     contraction, wave_center, lead, trail, recovery, cycle_amp = _phase_wave(s, phase)
+    radial_contraction = np.clip(contraction * float(narrowing_scale), 0.0, 1.0)
 
     x_new = np.empty_like(axis)
     y_new = np.empty_like(axis)
     z_new = np.empty_like(axis)
 
-    max_contraction = float(np.max(contraction))
+    max_contraction = float(np.max(radial_contraction))
     for idx in range(canonical_points.shape[0]):
         si = float(s[idx])
         x0, cy0, cz0, ry0, rz0 = regen._interp_profile(model, si)
@@ -241,16 +243,16 @@ def _deform_reference_points(
         rz_safe = max(rz0, 1e-6)
         theta = math.atan2(dz / rz_safe, dy / ry_safe)
 
-        ring_scale_y = 1.0 - (0.58 + 0.09 * (1.0 - si)) * contraction[idx]
-        ring_scale_z = 1.0 - (0.54 + 0.08 * (1.0 - si)) * contraction[idx]
-        circum_bias = 1.0 - 0.07 * contraction[idx] * math.cos(2.0 * (theta - 0.08))
+        ring_scale_y = 1.0 - (0.58 + 0.09 * (1.0 - si)) * radial_contraction[idx]
+        ring_scale_z = 1.0 - (0.54 + 0.08 * (1.0 - si)) * radial_contraction[idx]
+        circum_bias = 1.0 - 0.07 * radial_contraction[idx] * math.cos(2.0 * (theta - 0.08))
         pyloric_taper = 1.0 - 0.20 * math.exp(-((si - 0.06) / 0.050) ** 2) * (0.35 + 0.65 * cycle_amp)
 
-        axial_shift = -1.5 * cycle_amp * lead[idx] - 3.1 * contraction[idx] * math.exp(-((si - 0.22) / 0.16) ** 2)
-        distal_pull = -7.4 * contraction[idx] * math.exp(-((si - 0.11) / 0.09) ** 2)
-        body_sag = 2.5 * contraction[idx] * math.exp(-((si - 0.36) / 0.20) ** 2)
+        axial_shift = -1.5 * cycle_amp * lead[idx] - 3.1 * radial_contraction[idx] * math.exp(-((si - 0.22) / 0.16) ** 2)
+        distal_pull = -7.4 * radial_contraction[idx] * math.exp(-((si - 0.11) / 0.09) ** 2)
+        body_sag = 2.5 * radial_contraction[idx] * math.exp(-((si - 0.36) / 0.20) ** 2)
         recovery_lift = 0.85 * recovery[idx] * (1.0 - cycle_amp)
-        lumen_shift = 0.15 * contraction[idx] * rz_safe * math.sin(theta - 0.06)
+        lumen_shift = 0.15 * radial_contraction[idx] * rz_safe * math.sin(theta - 0.06)
         wall_push = (0.45 * lead[idx] + 0.22 * trail[idx]) * cycle_amp * (0.25 + abs(math.cos(theta)))
         center_y_shift = 0.65 * cycle_amp * (lead[idx] - 0.55 * trail[idx])
 
@@ -306,6 +308,7 @@ def _export_shared_topology_meshes(
     observation_rotation: np.ndarray,
     mesh_dir: Path,
     phase_bin_step_seconds: float,
+    narrowing_scale: float,
 ) -> list[MeshBuildResult]:
     mesh_dir.mkdir(parents=True, exist_ok=True)
     base_canonical_vertices = _observed_to_canonical_points(
@@ -321,6 +324,7 @@ def _export_shared_topology_meshes(
             model,
             float(phase_value),
             observation_rotation,
+            narrowing_scale,
         )
         mesh = trimesh.Trimesh(vertices=deformed_vertices, faces=np.asarray(base_mesh.faces, dtype=np.int64), process=False)
         mesh.remove_unreferenced_vertices()
@@ -392,7 +396,17 @@ def main() -> None:
         default=str(OUTPUT_BASE_DIR),
         help="Directory where the generated phase-sequence model run folder will be created",
     )
+    parser.add_argument(
+        "--narrowing-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor applied to radial peristaltic narrowing strength; values below 1.0 reduce inward constriction while preserving the original wave timing",
+    )
     args = parser.parse_args()
+
+    narrowing_scale = float(args.narrowing_scale)
+    if not (0.0 < narrowing_scale <= 1.0):
+        raise ValueError("narrowing-scale must be in (0, 1]")
 
     if not REFERENCE_PLY.exists():
         raise FileNotFoundError(f"Reference stomach point cloud not found: {REFERENCE_PLY}")
@@ -429,6 +443,7 @@ def main() -> None:
             model,
             float(phase_value),
             observation_rotation,
+            narrowing_scale,
         )
         pointcloud_path = points_dir / (
             f"run_{run_id}_phase_{phase_index:03d}_{phase_value:.3f}_{_format_timestamp_token(timestamp_s)}.ply"
@@ -467,6 +482,7 @@ def main() -> None:
         observation_rotation,
         points_dir / surface_cfg.out_subdir,
         phase_bin_step_seconds,
+        narrowing_scale,
     )
 
     summary_path = run_dir / "phase_sequence_summary.csv"
@@ -488,6 +504,7 @@ def main() -> None:
     print(f"[PhaseModels] Output directory: {run_dir}")
     print(f"[PhaseModels] Phase count: {phase_count}")
     print(f"[PhaseModels] Phase bin step: {phase_bin_step_seconds:.6f}s")
+    print(f"[PhaseModels] Narrowing scale: {narrowing_scale:.3f}")
     if not np.isnan(avg_duration):
         print(f"[PhaseModels] Monitor-aligned average cycle duration: {avg_duration:.6f}s")
     print(f"[PhaseModels] Point clouds: {len(pointcloud_paths)}")

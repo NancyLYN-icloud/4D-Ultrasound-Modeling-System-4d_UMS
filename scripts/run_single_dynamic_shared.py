@@ -115,9 +115,11 @@ def main() -> None:
         choices=[
             "动态共享",
             "动态共享-全局基残差",
+            "动态共享-参考对应正则",
             "动态共享-连续形变场",
             "动态共享-解耦运动潜码",
             "动态共享-解耦形状运动潜码",
+            "动态共享-CPD对应点",
             "动态共享-无先验4D场",
         ],
         default="动态共享-全局基残差",
@@ -133,6 +135,11 @@ def main() -> None:
     parser.add_argument("--dynamic-train-steps", type=int, default=None)
     parser.add_argument("--dynamic-mesh-resolution", type=int, default=None)
     parser.add_argument("--max-points-per-phase", type=int, default=None)
+    parser.add_argument("--canonical-hidden-dim", type=int, default=None)
+    parser.add_argument("--canonical-hidden-layers", type=int, default=None)
+    parser.add_argument("--deformation-hidden-dim", type=int, default=None)
+    parser.add_argument("--deformation-hidden-layers", type=int, default=None)
+    parser.add_argument("--confidence-floor", type=float, default=None)
     parser.add_argument("--temporal-weight", type=float, default=None)
     parser.add_argument("--temporal-acceleration-weight", type=float, default=None)
     parser.add_argument("--phase-consistency-weight", type=float, default=None)
@@ -212,6 +219,11 @@ def main() -> None:
 
     overrides = {
         "max_points_per_phase": args.max_points_per_phase,
+        "canonical_hidden_dim": args.canonical_hidden_dim,
+        "canonical_hidden_layers": args.canonical_hidden_layers,
+        "deformation_hidden_dim": args.deformation_hidden_dim,
+        "deformation_hidden_layers": args.deformation_hidden_layers,
+        "confidence_floor": args.confidence_floor,
         "temporal_weight": args.temporal_weight,
         "temporal_acceleration_weight": args.temporal_acceleration_weight,
         "phase_consistency_weight": args.phase_consistency_weight,
