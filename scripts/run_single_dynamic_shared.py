@@ -27,6 +27,7 @@ from scripts.run_experiments import (
 )
 from src.config import PointCloudPhaseSummary
 from src.modeling.dynamic_surface_reconstruction import reconstruct_dynamic_meshes_from_pointclouds
+from src.stomach_instance_paths import resolve_instance_paths
 
 
 def _load_phase_cache(pointcloud_root: Path) -> tuple[list[Path], dict[Path, PointCloudPhaseSummary], dict[Path, float]]:
@@ -125,6 +126,7 @@ def main() -> None:
         default="动态共享-全局基残差",
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_EXPERIMENT_ROOT)
+    parser.add_argument("--instance-name", type=str, default=None)
     parser.add_argument("--monitor-path", type=Path, default=DEFAULT_MONITOR_PATH)
     parser.add_argument("--scanner-path", type=Path, default=DEFAULT_SCANNER_PATH)
     parser.add_argument("--gt-mesh-path", type=Path, default=DEFAULT_GT_MESH_PATH)
@@ -195,9 +197,19 @@ def main() -> None:
     parser.add_argument("--shape-offset-reg-weight", type=float, default=None)
     parser.add_argument("--shape-spatial-weight", type=float, default=None)
     parser.add_argument("--shape-code-reg-weight", type=float, default=None)
+    parser.add_argument("--motion-latent-dim", type=int, default=None)
     parser.add_argument("--motion-mean-weight", type=float, default=None)
     parser.add_argument("--motion-lipschitz-weight", type=float, default=None)
     args = parser.parse_args()
+
+    if args.instance_name is not None:
+        instance_paths = resolve_instance_paths(instance_name=args.instance_name)
+        if args.monitor_path == DEFAULT_MONITOR_PATH:
+            args.monitor_path = instance_paths.monitor_stream
+        if args.scanner_path == DEFAULT_SCANNER_PATH:
+            args.scanner_path = instance_paths.scanner_sequence
+        if args.gt_mesh_path == DEFAULT_GT_MESH_PATH:
+            args.gt_mesh_path = instance_paths.gt_mesh_dir
 
     run_dir = _make_run_dir(args.out_dir, args.mode, "single-dynamic-shared", args.run_name)
     artifact_dir = run_dir / "artifacts"
@@ -279,6 +291,7 @@ def main() -> None:
         "shape_offset_reg_weight": args.shape_offset_reg_weight,
         "shape_spatial_weight": args.shape_spatial_weight,
         "shape_code_reg_weight": args.shape_code_reg_weight,
+        "motion_latent_dim": args.motion_latent_dim,
         "motion_mean_weight": args.motion_mean_weight,
         "motion_lipschitz_weight": args.motion_lipschitz_weight,
     }

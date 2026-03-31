@@ -17,15 +17,16 @@ if str(ROOT) not in sys.path:
 
 import scripts.regenerate_freehand_scanner_sequence as regen
 from src.paths import data_path
+from src.stomach_instance_paths import resolve_instance_paths, resolve_monitor_input_path, resolve_scanner_template_path
 
-TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
-RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
-REFERENCE_PLY = data_path("test", "stomach.ply")
+TEST_SCANNER_PATH = data_path("benchmark", "scanner_sequence.npz")
 
 
 def build_segment(
     timestamps: np.ndarray,
     frame_shape: tuple[int, int],
+    monitor_stream: Path,
+    reference_ply: Path,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if timestamps.size == 0:
         return (
@@ -35,8 +36,8 @@ def build_segment(
         )
 
     with contextlib.redirect_stdout(io.StringIO()):
-        gastric_period = regen.detect_monitor_period(RAW_MONITOR_PATH)
-    model = regen.load_reference_model(REFERENCE_PLY)
+        gastric_period = regen.detect_monitor_period(monitor_stream)
+    model = regen.load_reference_model(reference_ply)
 
     frames = np.zeros((timestamps.shape[0], frame_shape[0], frame_shape[1]), dtype=np.float32)
     positions = np.zeros((timestamps.shape[0], 3), dtype=np.float64)
@@ -60,6 +61,8 @@ def build_extra_segment(
     timestamps: np.ndarray,
     target_duration: float,
     frame_shape: tuple[int, int],
+    monitor_stream: Path,
+    reference_ply: Path,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if timestamps.size < 2:
         raise ValueError("scanner_sequence.npz must contain at least two timestamps")
@@ -75,11 +78,15 @@ def build_extra_segment(
 
     extra_timestamps = float(timestamps[-1]) + dt * np.arange(1, extra_count + 1, dtype=np.float64)
 
-    return build_segment(extra_timestamps, frame_shape)
+    return build_segment(extra_timestamps, frame_shape, monitor_stream, reference_ply)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extend the test scanner_sequence.npz in the external data root to a longer duration")
+    parser.add_argument("--instance-name", type=str, default=None)
+    parser.add_argument("--reference-ply", type=Path, default=None)
+    parser.add_argument("--monitor-path", type=Path, default=None)
+    parser.add_argument("--scanner-template-path", type=Path, default=None)
     parser.add_argument("--target-duration", type=float, default=900.0, help="Target duration in seconds")
     parser.add_argument(
         "--rewrite-all",
@@ -88,7 +95,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with np.load(TEST_SCANNER_PATH) as data:
+    instance_paths = resolve_instance_paths(instance_name=args.instance_name, reference_ply=args.reference_ply)
+    monitor_path = resolve_monitor_input_path(instance_paths, args.monitor_path)
+    scanner_template_path = resolve_scanner_template_path(instance_paths, args.scanner_template_path)
+    output_scanner_path = instance_paths.scanner_sequence if args.instance_name is not None or args.reference_ply is not None else TEST_SCANNER_PATH
+
+    with np.load(scanner_template_path) as data:
         frames = data["frames"].copy().astype(np.float32)
         timestamps = data["timestamps"].copy().astype(np.float64)
         positions = data["positions"].copy().astype(np.float64)
@@ -98,6 +110,8 @@ def main() -> None:
         frames, positions, orientations = build_segment(
             timestamps=timestamps,
             frame_shape=(frames.shape[1], frames.shape[2]),
+            monitor_stream=monitor_path,
+            reference_ply=instance_paths.reference_ply,
         )
 
     if float(timestamps[-1]) >= args.target_duration - 1e-9 and not args.rewrite_all:
@@ -115,6 +129,8 @@ def main() -> None:
             timestamps=timestamps,
             target_duration=args.target_duration,
             frame_shape=(frames.shape[1], frames.shape[2]),
+            monitor_stream=monitor_path,
+            reference_ply=instance_paths.reference_ply,
         )
         extra_timestamps = float(timestamps[-1]) + dt * np.arange(1, extra_frames.shape[0] + 1, dtype=np.float64)
         frames_out = np.concatenate([frames_out, extra_frames], axis=0)
@@ -122,7 +138,8 @@ def main() -> None:
         positions_out = np.concatenate([positions_out, extra_positions], axis=0)
         orientations_out = np.concatenate([orientations_out, extra_orientations], axis=0)
 
-    tmp_path = TEST_SCANNER_PATH.with_name(TEST_SCANNER_PATH.stem + ".tmp.npz")
+    output_scanner_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_scanner_path.with_name(output_scanner_path.stem + ".tmp.npz")
     np.savez_compressed(
         tmp_path,
         frames=frames_out,
@@ -130,9 +147,10 @@ def main() -> None:
         positions=positions_out,
         orientations=orientations_out,
     )
-    os.replace(tmp_path, TEST_SCANNER_PATH)
+    os.replace(tmp_path, output_scanner_path)
 
-    print(f"Extended {TEST_SCANNER_PATH}")
+    print(f"Instance: {instance_paths.name}")
+    print(f"Extended {output_scanner_path}")
     print(f"Old frames: {len(timestamps)}")
     print(f"New frames: {len(timestamps_out)}")
     print(f"Last timestamp: {float(timestamps_out[-1]):.6f}s")

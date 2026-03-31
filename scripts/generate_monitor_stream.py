@@ -8,6 +8,7 @@ multi-cycle phase standardization is meaningfully exercised.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import sys
 
@@ -20,10 +21,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.paths import data_path
+from src.stomach_instance_paths import list_reference_pointclouds, resolve_instance_paths
 
 
-OUT_NPZ = data_path("test", "monitor_stream.npz")
-OUT_IMG_DIR = data_path("test", "image", "monitor")
+OUT_NPZ = data_path("benchmark", "monitor_stream.npz")
+OUT_IMG_DIR = data_path("benchmark", "image", "monitor")
 
 IMAGE_SIZE = 64
 DURATION_SECONDS = 180.0
@@ -183,7 +185,7 @@ def save_png_sequence(frames: np.ndarray, output_dir: Path) -> None:
         image.save(output_dir / f"monitor_{index:04d}.png")
 
 
-def main() -> None:
+def generate_monitor_dataset(output_npz: Path, output_img_dir: Path) -> None:
     rng = np.random.default_rng(RNG_SEED)
     total_frames = int(DURATION_SECONDS * FRAME_RATE)
     timestamps = (np.arange(total_frames, dtype=np.float32) / np.float32(FRAME_RATE)).astype(np.float32)
@@ -199,17 +201,17 @@ def main() -> None:
     slow_baseline = 0.008 * np.sin(2.0 * np.pi * timestamps / 95.0 + 0.3)
     feature_trace = (0.03 + slow_baseline + 0.15 * contraction).astype(np.float32)
 
-    OUT_NPZ.parent.mkdir(parents=True, exist_ok=True)
+    output_npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        OUT_NPZ,
+        output_npz,
         frames=frames,
         timestamps=timestamps,
         feature_trace=feature_trace,
     )
-    save_png_sequence(frames, OUT_IMG_DIR)
+    save_png_sequence(frames, output_img_dir)
 
-    print(f"Wrote {OUT_NPZ} with shape {frames.shape}")
-    print(f"Saved {len(frames)} PNG files to {OUT_IMG_DIR}")
+    print(f"Wrote {output_npz} with shape {frames.shape}")
+    print(f"Saved {len(frames)} PNG files to {output_img_dir}")
     print(
         "Feature trace range:",
         f"{float(feature_trace.min()):.4f} .. {float(feature_trace.max()):.4f}",
@@ -226,6 +228,39 @@ def main() -> None:
         "Peak phase range:",
         f"{float(schedule['peak_phases'].min()):.3f} .. {float(schedule['peak_phases'].max()):.3f}",
     )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate synthetic monitor_stream.npz and monitor PNGs")
+    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+    parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
+    parser.add_argument("--batch-all-references", action="store_true", help="Generate monitor data for all point clouds under benchmark/stomach_pcd")
+    args = parser.parse_args()
+
+    if args.batch_all_references:
+        reference_paths = list_reference_pointclouds()
+        if not reference_paths:
+            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+        for reference_path in reference_paths:
+            instance_paths = resolve_instance_paths(instance_name=reference_path.stem, reference_ply=reference_path)
+            generate_monitor_dataset(
+                output_npz=instance_paths.monitor_stream,
+                output_img_dir=instance_paths.test_root / "image" / "monitor",
+            )
+        return
+
+    if args.instance_name is not None or args.reference_ply is not None:
+        instance_paths = resolve_instance_paths(
+            instance_name=args.instance_name,
+            reference_ply=Path(args.reference_ply).expanduser().resolve() if args.reference_ply else None,
+        )
+        generate_monitor_dataset(
+            output_npz=instance_paths.monitor_stream,
+            output_img_dir=instance_paths.test_root / "image" / "monitor",
+        )
+        return
+
+    generate_monitor_dataset(output_npz=OUT_NPZ, output_img_dir=OUT_IMG_DIR)
 
 
 if __name__ == "__main__":

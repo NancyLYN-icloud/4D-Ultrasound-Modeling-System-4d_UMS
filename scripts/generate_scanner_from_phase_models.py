@@ -18,22 +18,25 @@ if str(ROOT) not in sys.path:
 
 import scripts.regenerate_freehand_scanner_sequence as regen
 from src.paths import data_path
+from src.stomach_instance_paths import (
+    list_reference_pointclouds,
+    resolve_instance_paths,
+    resolve_monitor_input_path,
+    resolve_scanner_template_path,
+)
 
 
-TEST_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
-TEST_MONITOR_PATH = data_path("test", "monitor_stream.npz")
 RAW_MONITOR_PATH = data_path("raw", "monitor_stream.npz")
-SCANNER_IMG_DIR = data_path("test", "image", "scanner")
 PHASE_MODEL_PREFIX = "phase_sequence_models_run_"
 PHASE_MODEL_BASE_DIR = data_path("simuilate_data")
 FRAME_SIZE = 512
 PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
 
 
-def _latest_phase_model_dir() -> Path:
-    candidates = sorted([path for path in PHASE_MODEL_BASE_DIR.iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)])
+def _latest_phase_model_dir(base_dir: Path) -> Path:
+    candidates = sorted([path for path in base_dir.iterdir() if path.is_dir() and path.name.startswith(PHASE_MODEL_PREFIX)])
     if not candidates:
-        raise FileNotFoundError("No phase_sequence_models_run_* directory found")
+        raise FileNotFoundError(f"No phase_sequence_models_run_* directory found under {base_dir}")
     return candidates[-1]
 
 
@@ -173,34 +176,45 @@ def _save_png(frame: np.ndarray, path: Path) -> None:
 
 
 def generate_from_phase_models(
+    instance_name: str | None,
+    reference_ply: Path | None,
     phase_model_dir: Path,
     rewrite_pngs: bool = True,
     fps: float | None = None,
     duration_seconds: float | None = None,
+    monitor_path: Path | None = None,
+    scanner_template_path: Path | None = None,
 ) -> None:
+    instance_paths = resolve_instance_paths(instance_name=instance_name, reference_ply=reference_ply)
     summary_path = phase_model_dir / "phase_sequence_summary.csv"
     phase_values, mesh_paths = _read_phase_summary(summary_path)
     meshes = _load_meshes(mesh_paths)
 
     if fps is None or duration_seconds is None:
-        with np.load(TEST_SCANNER_PATH) as data:
+        template_scanner_path = resolve_scanner_template_path(instance_paths, explicit_path=scanner_template_path)
+        with np.load(template_scanner_path) as data:
             timestamps = data["timestamps"].copy().astype(np.float64)
     else:
         timestamps = _build_timestamps(duration_seconds=duration_seconds, fps=fps)
 
-    monitor_path = TEST_MONITOR_PATH if TEST_MONITOR_PATH.exists() else RAW_MONITOR_PATH
-    gastric_period = regen.detect_monitor_period(monitor_path)
-    reference_model = regen.load_reference_model(data_path("test", "stomach.ply"))
+    resolved_monitor_path = resolve_monitor_input_path(instance_paths, explicit_path=monitor_path)
+    if not resolved_monitor_path.exists() and RAW_MONITOR_PATH.exists():
+        resolved_monitor_path = RAW_MONITOR_PATH
+    gastric_period = regen.detect_monitor_period(resolved_monitor_path)
+    reference_model = regen.load_reference_model(instance_paths.reference_ply)
     observation_transform = _load_observation_transform(phase_model_dir)
 
     frame_count = len(timestamps)
     positions = np.zeros((frame_count, 3), dtype=np.float64)
     orientations = np.zeros((frame_count, 3, 3), dtype=np.float64)
 
+    instance_paths.scanner_image_dir.mkdir(parents=True, exist_ok=True)
     if rewrite_pngs:
-        _clear_scanner_pngs(SCANNER_IMG_DIR)
+        _clear_scanner_pngs(instance_paths.scanner_image_dir)
 
-    with tempfile.TemporaryDirectory(prefix="scanner_phase_frames_", dir=str(TEST_SCANNER_PATH.parent)) as tmp_dir:
+    tmp_root = instance_paths.scanner_sequence.parent
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="scanner_phase_frames_", dir=str(tmp_root)) as tmp_dir:
         frames_path = Path(tmp_dir) / "frames.npy"
         frames = np.lib.format.open_memmap(
             frames_path,
@@ -225,7 +239,7 @@ def generate_from_phase_models(
             frames[index] = frame_uint8
 
             if rewrite_pngs:
-                Image.fromarray(frame_uint8, mode="L").save(SCANNER_IMG_DIR / f"scanner_{index:04d}.png")
+                Image.fromarray(frame_uint8, mode="L").save(instance_paths.scanner_image_dir / f"scanner_{index:04d}.png")
             if index < 5 or index % 1000 == 0 or index == frame_count - 1:
                 print(
                     f"[ScannerFromPhaseModels] frame={index:05d}/{frame_count - 1} "
@@ -233,7 +247,7 @@ def generate_from_phase_models(
                 )
 
         frames.flush()
-        tmp_path = TEST_SCANNER_PATH.with_name(TEST_SCANNER_PATH.stem + ".tmp.npz")
+        tmp_path = instance_paths.scanner_sequence.with_name(instance_paths.scanner_sequence.stem + ".tmp.npz")
         np.savez_compressed(
             tmp_path,
             frames=frames,
@@ -244,37 +258,78 @@ def generate_from_phase_models(
 
     tmp_final = tmp_path if tmp_path.suffix == ".npz" else tmp_path.with_suffix(".npz")
     final_tmp = tmp_final if tmp_final.exists() else tmp_path
-    final_tmp.replace(TEST_SCANNER_PATH)
+    instance_paths.scanner_sequence.parent.mkdir(parents=True, exist_ok=True)
+    final_tmp.replace(instance_paths.scanner_sequence)
 
-    print(f"[ScannerFromPhaseModels] Rewrote {TEST_SCANNER_PATH}")
+    print(f"[ScannerFromPhaseModels] Instance: {instance_paths.name}")
+    print(f"[ScannerFromPhaseModels] Reference: {instance_paths.reference_ply}")
+    print(f"[ScannerFromPhaseModels] Rewrote {instance_paths.scanner_sequence}")
     print(f"[ScannerFromPhaseModels] Phase model dir: {phase_model_dir}")
-    print(f"[ScannerFromPhaseModels] Monitor path: {monitor_path}")
+    print(f"[ScannerFromPhaseModels] Monitor path: {resolved_monitor_path}")
     print(f"[ScannerFromPhaseModels] Gastric period: {gastric_period:.6f}s")
     print(f"[ScannerFromPhaseModels] Frames: {len(frames)}")
     if fps is not None and duration_seconds is not None:
         print(f"[ScannerFromPhaseModels] FPS: {fps:.6f}")
         print(f"[ScannerFromPhaseModels] Duration: {duration_seconds:.6f}s")
-    print(f"[ScannerFromPhaseModels] PNG dir: {SCANNER_IMG_DIR}")
+    print(f"[ScannerFromPhaseModels] PNG dir: {instance_paths.scanner_image_dir}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Regenerate test scanner_sequence.npz from phase-sequence stomach models")
+    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+    parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
     parser.add_argument("--phase-model-dir", type=str, default="", help="Specific phase_sequence_models_run directory to use")
     parser.add_argument("--no-png", action="store_true", help="Do not rewrite scanner PNG images")
     parser.add_argument("--fps", type=float, default=None, help="Output scanner frame rate in Hz")
     parser.add_argument("--duration-seconds", type=float, default=None, help="Output scanner duration in seconds")
+    parser.add_argument("--monitor-path", type=str, default=None, help="Optional explicit monitor_stream.npz path")
+    parser.add_argument("--scanner-template-path", type=str, default=None, help="Optional scanner_sequence.npz whose timestamps will be reused")
+    parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under benchmark/stomach_pcd")
     args = parser.parse_args()
 
-    phase_model_dir = Path(args.phase_model_dir) if args.phase_model_dir else _latest_phase_model_dir()
-    if not phase_model_dir.exists():
-        raise FileNotFoundError(f"Phase model directory not found: {phase_model_dir}")
     if (args.fps is None) != (args.duration_seconds is None):
         raise ValueError("--fps and --duration-seconds must be provided together")
+
+    monitor_path = Path(args.monitor_path).expanduser().resolve() if args.monitor_path else None
+    scanner_template_path = Path(args.scanner_template_path).expanduser().resolve() if args.scanner_template_path else None
+
+    if args.batch_all_references:
+        reference_paths = list_reference_pointclouds()
+        if not reference_paths:
+            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+        for reference_path in reference_paths:
+            instance_paths = resolve_instance_paths(instance_name=reference_path.stem, reference_ply=reference_path)
+            phase_model_dir = Path(args.phase_model_dir).expanduser().resolve() if args.phase_model_dir else _latest_phase_model_dir(instance_paths.phase_model_base_dir)
+            if not phase_model_dir.exists():
+                raise FileNotFoundError(f"Phase model directory not found: {phase_model_dir}")
+            generate_from_phase_models(
+                instance_name=reference_path.stem,
+                reference_ply=reference_path,
+                phase_model_dir=phase_model_dir,
+                rewrite_pngs=not args.no_png,
+                fps=args.fps,
+                duration_seconds=args.duration_seconds,
+                monitor_path=monitor_path,
+                scanner_template_path=scanner_template_path,
+            )
+        return
+
+    instance_paths = resolve_instance_paths(
+        instance_name=args.instance_name,
+        reference_ply=Path(args.reference_ply).expanduser().resolve() if args.reference_ply else None,
+    )
+    phase_model_dir = Path(args.phase_model_dir).expanduser().resolve() if args.phase_model_dir else _latest_phase_model_dir(instance_paths.phase_model_base_dir)
+    if not phase_model_dir.exists():
+        raise FileNotFoundError(f"Phase model directory not found: {phase_model_dir}")
     generate_from_phase_models(
+        instance_name=instance_paths.name,
+        reference_ply=instance_paths.reference_ply,
         phase_model_dir=phase_model_dir,
         rewrite_pngs=not args.no_png,
         fps=args.fps,
         duration_seconds=args.duration_seconds,
+        monitor_path=monitor_path,
+        scanner_template_path=scanner_template_path,
     )
 
 

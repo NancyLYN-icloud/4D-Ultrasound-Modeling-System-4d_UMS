@@ -29,10 +29,11 @@ from src.data_acquisition.monitor import UltrasoundMonitor
 from src.modeling.metrics import compute_chamfer_distance, compute_hausdorff_distance, compute_temporal_smoothness
 from src.paths import data_path
 from src.pipelines.multicycle_reconstruction import MulticycleReconstructionPipeline, PipelineOutput
+from src.stomach_instance_paths import resolve_instance_paths
 
 
-DEFAULT_MONITOR_PATH = data_path("test", "monitor_stream.npz")
-DEFAULT_SCANNER_PATH = data_path("test", "scanner_sequence.npz")
+DEFAULT_MONITOR_PATH = data_path("benchmark", "monitor_stream.npz")
+DEFAULT_SCANNER_PATH = data_path("benchmark", "scanner_sequence.npz")
 DEFAULT_GT_MESH_PATH = data_path("simuilate_data", "meshes")
 DEFAULT_EXPERIMENT_ROOT = data_path("experiments")
 
@@ -120,9 +121,10 @@ def _write_run_metadata(args: argparse.Namespace, run_dir: Path, log_path: Path)
         "command": " ".join([Path(sys.argv[0]).name, *sys.argv[1:]]),
         "run_dir": str(run_dir),
         "log_path": str(log_path),
-        "monitor_path": str(Path(args.monitor_path).resolve()),
-        "scanner_path": str(Path(args.scanner_path).resolve()),
-        "gt_mesh_path": str(Path(args.gt_mesh_path).resolve()),
+        "monitor_path": str(Path(getattr(args, "resolved_monitor_path", args.monitor_path)).resolve()),
+        "scanner_path": str(Path(getattr(args, "resolved_scanner_path", args.scanner_path)).resolve()),
+        "gt_mesh_path": str(Path(getattr(args, "resolved_gt_mesh_path", args.gt_mesh_path)).resolve()),
+        "instance_name": getattr(args, "instance_name", None),
         "mode": args.mode,
         "experiment_set": args.experiment_set,
         "run_name": args.run_name,
@@ -429,6 +431,25 @@ def _run_pipeline(method: str, config: PipelineConfig, monitor_path: Path, scann
     return pipeline.run(monitor, scanner)
 
 
+def _resolve_dataset_paths(
+    instance_name: str | None,
+    monitor_path: str,
+    scanner_path: str,
+    gt_mesh_path: str,
+) -> tuple[Path, Path, Path]:
+    monitor = Path(monitor_path)
+    scanner = Path(scanner_path)
+    gt_mesh = Path(gt_mesh_path)
+    if instance_name is None:
+        return monitor, scanner, gt_mesh
+
+    instance_paths = resolve_instance_paths(instance_name=instance_name)
+    resolved_monitor = instance_paths.monitor_stream if monitor == DEFAULT_MONITOR_PATH else monitor
+    resolved_scanner = instance_paths.scanner_sequence if scanner == DEFAULT_SCANNER_PATH else scanner
+    resolved_gt = instance_paths.gt_mesh_dir if gt_mesh == DEFAULT_GT_MESH_PATH else gt_mesh
+    return resolved_monitor, resolved_scanner, resolved_gt
+
+
 def _evaluate_output(
     method: str,
     output: PipelineOutput,
@@ -585,6 +606,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=["fast-dev", "dynamic-detail", "full-paper"], default="fast-dev", help="实验运行模式：快速调试、动态细节诊断或正式论文配置")
     parser.add_argument("--experiment-set", choices=["method-comparison", "cpd-ablation", "both"], default="both", help="运行方法对比、主方法消融（兼容旧名称 cpd-ablation），或两者都跑")
     parser.add_argument("--out-dir", type=str, default=str(DEFAULT_EXPERIMENT_ROOT), help="实验归档根目录；每次运行会在该目录下创建独立子目录")
+    parser.add_argument("--instance-name", type=str, default=None, help="可选胃部实例名；未显式传路径时自动解析该实例的 monitor/scanner/GT")
     parser.add_argument("--monitor-path", type=str, default=str(DEFAULT_MONITOR_PATH), help="监测流 NPZ 路径")
     parser.add_argument("--scanner-path", type=str, default=str(DEFAULT_SCANNER_PATH), help="扫描流 NPZ 路径")
     parser.add_argument("--gt-mesh-path", type=str, default=str(DEFAULT_GT_MESH_PATH), help="真值网格路径")
@@ -602,6 +624,15 @@ def main() -> None:
 
     out_root = Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
+    monitor_path, scanner_path, gt_mesh_path = _resolve_dataset_paths(
+        instance_name=args.instance_name,
+        monitor_path=str(args.monitor_path),
+        scanner_path=str(args.scanner_path),
+        gt_mesh_path=str(args.gt_mesh_path),
+    )
+    args.resolved_monitor_path = str(monitor_path)
+    args.resolved_scanner_path = str(scanner_path)
+    args.resolved_gt_mesh_path = str(gt_mesh_path)
     run_dir = _make_run_dir(out_root, args.mode, args.experiment_set, args.run_name)
     artifact_dir = run_dir / "artifacts"
     config_dir = run_dir / "configs"
@@ -625,9 +656,9 @@ def main() -> None:
                     experiment_dir=run_dir,
                     artifact_dir=artifact_dir,
                     config_dir=config_dir,
-                    monitor_path=Path(args.monitor_path),
-                    scanner_path=Path(args.scanner_path),
-                    gt_mesh_path=Path(args.gt_mesh_path),
+                    monitor_path=monitor_path,
+                    scanner_path=scanner_path,
+                    gt_mesh_path=gt_mesh_path,
                     mode=str(args.mode),
                     dynamic_train_steps=args.dynamic_train_steps,
                     dynamic_mesh_resolution=args.dynamic_mesh_resolution,
@@ -640,9 +671,9 @@ def main() -> None:
                     experiment_dir=run_dir,
                     artifact_dir=artifact_dir,
                     config_dir=config_dir,
-                    monitor_path=Path(args.monitor_path),
-                    scanner_path=Path(args.scanner_path),
-                    gt_mesh_path=Path(args.gt_mesh_path),
+                    monitor_path=monitor_path,
+                    scanner_path=scanner_path,
+                    gt_mesh_path=gt_mesh_path,
                     mode=str(args.mode),
                     dynamic_train_steps=args.dynamic_train_steps,
                     dynamic_mesh_resolution=args.dynamic_mesh_resolution,

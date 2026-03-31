@@ -105,8 +105,17 @@ export UMS_DATA_ROOT=/your/data/root
 
 - `test/monitor_stream.npz`
 - `test/scanner_sequence.npz`
-- `test/stomach.ply`：静态参考点云
+- `benchmark/stomach_pcd/niujiao01.ply`：默认实例 `niujiao01` 的静态参考点云
+- `benchmark/stomach_pcd/*.ply`：多胃部实例参考点云库；其他实例的派生数据默认写入 `benchmark/instances/<instance>/` 与 `simuilate_data/instances/<instance>/`
 - `simuilate_data/meshes/`：相位级动态仿真 GT 网格序列（实验评估默认使用）
+
+多实例工作流推荐入口：
+
+- `python scripts/generate_phase_sequence_models.py --batch-all-references`
+- `python scripts/generate_scanner_from_phase_models.py --batch-all-references`
+- `scripts/build_multi_instance_dataset.sh`
+- `python scripts/run_experiments.py --instance-name niujiao01 --mode dynamic-detail --experiment-set both`
+- `scripts/run_multi_instance_experiments.sh`
 
 ## 当前推荐实验模式
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import math
@@ -17,13 +18,8 @@ from src.config import CycleInfo, FrameFeature, PipelineConfig
 from src.paths import data_path
 from src.preprocessing.phase_canonicalization import NonlinearPhaseCanonicalizer
 from src.preprocessing.phase_detection import PhaseDetector
+from src.stomach_instance_paths import list_reference_pointclouds, resolve_instance_paths, resolve_monitor_input_path
 
-
-OUT_DIR = data_path("test")
-RAW_OUT_DIR = OUT_DIR
-SCANNER_IMG_DIR = OUT_DIR / "image" / "scanner"
-REFERENCE_PLY = OUT_DIR / "stomach.ply"
-MONITOR_STREAM = OUT_DIR / "monitor_stream.npz"
 
 SCANNER_DURATION = 900.0
 SCANNER_FPS = 10.0
@@ -389,6 +385,9 @@ def generate_scanner_stream(
 	gastric_period: float,
 	cycle_schedule: list[CycleInfo],
 	target_peak_phase: float,
+	output_path: Path,
+	scanner_img_dir: Path,
+	mirror_output_path: Path | None = None,
 ) -> None:
 	timestamps = np.arange(SCANNER_FRAMES, dtype=np.float64) / SCANNER_FPS
 	frames = np.zeros((SCANNER_FRAMES, SCANNER_SIZE, SCANNER_SIZE), dtype=np.float32)
@@ -410,41 +409,55 @@ def generate_scanner_stream(
 		frame = translate_binary_frame(frame, shift_x=shift_x, shift_y=shift_y)
 
 		frames[idx] = frame
-		save_png(frame, SCANNER_IMG_DIR / f"scanner_{idx:04d}.png")
+		save_png(frame, scanner_img_dir / f"scanner_{idx:04d}.png")
 
-	OUT_DIR.mkdir(parents=True, exist_ok=True)
-	RAW_OUT_DIR.mkdir(parents=True, exist_ok=True)
+	output_path.parent.mkdir(parents=True, exist_ok=True)
 	np.savez_compressed(
-		OUT_DIR / "scanner_sequence.npz",
+		output_path,
 		frames=frames.astype(np.float32),
 		timestamps=timestamps,
 		positions=positions,
 		orientations=orientations,
 	)
-	np.savez_compressed(
-		RAW_OUT_DIR / "scanner_sequence.npz",
-		frames=frames.astype(np.float32),
-		timestamps=timestamps,
-		positions=positions,
-		orientations=orientations,
-	)
+	if mirror_output_path is not None and mirror_output_path != output_path:
+		mirror_output_path.parent.mkdir(parents=True, exist_ok=True)
+		np.savez_compressed(
+			mirror_output_path,
+			frames=frames.astype(np.float32),
+			timestamps=timestamps,
+			positions=positions,
+			orientations=orientations,
+		)
 
 
-def clear_existing_scanner_pngs() -> None:
-	SCANNER_IMG_DIR.mkdir(parents=True, exist_ok=True)
-	for path in SCANNER_IMG_DIR.glob("scanner_*.png"):
+def clear_existing_scanner_pngs(scanner_img_dir: Path) -> None:
+	scanner_img_dir.mkdir(parents=True, exist_ok=True)
+	for path in scanner_img_dir.glob("scanner_*.png"):
 		path.unlink()
 
 
-def main() -> None:
-	if not REFERENCE_PLY.exists():
-		raise FileNotFoundError(f"Reference stomach point cloud not found: {REFERENCE_PLY}")
-	reference_cycles = detect_monitor_cycles(MONITOR_STREAM)
+def generate_dataset_for_instance(
+	instance_name: str | None = None,
+	reference_ply: Path | None = None,
+	monitor_path: Path | None = None,
+) -> None:
+	instance_paths = resolve_instance_paths(instance_name=instance_name, reference_ply=reference_ply)
+	resolved_monitor_path = resolve_monitor_input_path(instance_paths, monitor_path)
+	if not instance_paths.reference_ply.exists():
+		raise FileNotFoundError(f"Reference stomach point cloud not found: {instance_paths.reference_ply}")
+	reference_cycles = detect_monitor_cycles(resolved_monitor_path)
 	gastric_period = float(np.mean([cycle.duration for cycle in reference_cycles]))
 	cycle_schedule, target_peak_phase = build_scanner_cycle_schedule(reference_cycles, SCANNER_DURATION)
-	clear_existing_scanner_pngs()
-	model = load_reference_model(REFERENCE_PLY)
-	generate_scanner_stream(model, gastric_period, cycle_schedule, target_peak_phase)
+	clear_existing_scanner_pngs(instance_paths.scanner_image_dir)
+	model = load_reference_model(instance_paths.reference_ply)
+	generate_scanner_stream(
+		model,
+		gastric_period,
+		cycle_schedule,
+		target_peak_phase,
+		output_path=instance_paths.scanner_sequence,
+		scanner_img_dir=instance_paths.scanner_image_dir,
+	)
 	print(f"Detected gastric period from monitor stream: {gastric_period:.6f}s")
 	print(
 		"Scanner cycle schedule:",
@@ -453,8 +466,33 @@ def main() -> None:
 	)
 	print(f"Scanner duration: {SCANNER_DURATION:.1f}s, fps: {SCANNER_FPS:.1f}, frames: {SCANNER_FRAMES}")
 	
-	print(f"Generated scanner data at {OUT_DIR / 'scanner_sequence.npz'}")
-	print(f"Scanner PNGs: {SCANNER_IMG_DIR}")
+	print(f"Instance: {instance_paths.name}")
+	print(f"Generated scanner data at {instance_paths.scanner_sequence}")
+	print(f"Scanner PNGs: {instance_paths.scanner_image_dir}")
+
+
+def main() -> None:
+	parser = argparse.ArgumentParser(description="Generate gastric test scanner data from one or more reference point clouds")
+	parser.add_argument("--instance-name", type=str, default=None)
+	parser.add_argument("--reference-ply", type=Path, default=None)
+	parser.add_argument("--monitor-path", type=Path, default=None)
+	parser.add_argument("--batch-all-references", action="store_true")
+	args = parser.parse_args()
+
+	if args.batch_all_references:
+		for reference_path in list_reference_pointclouds():
+			generate_dataset_for_instance(
+				instance_name=reference_path.stem,
+				reference_ply=reference_path,
+				monitor_path=args.monitor_path,
+			)
+		return
+
+	generate_dataset_for_instance(
+		instance_name=args.instance_name,
+		reference_ply=args.reference_ply,
+		monitor_path=args.monitor_path,
+	)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
 from src.paths import data_path
 
 
-TEST_DIR = data_path("test", "image")
-OUT_DIR = data_path("test", "preview")
+TEST_DIR = data_path("benchmark", "image")
+OUT_DIR = data_path("benchmark", "preview")
 
 
 def build_montage(source_dir: Path, out_path: Path, *, rows: int, cols: int, thumb_size: tuple[int, int], title: str) -> None:
