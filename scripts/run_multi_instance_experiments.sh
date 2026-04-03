@@ -41,7 +41,7 @@ resolve_instances() {
         printf '%s\n' "${INSTANCES[@]}"
         return
     fi
-    find /home/liuyanan/data/Research_Data/4D-UMS/benchmark/stomach_pcd -maxdepth 1 -type f -name '*.ply' -printf '%f\n' | sed 's/\.ply$//' | sort
+    find /home/liuyanan/data/Research_Data/4D-UMS/stomach_pcd -maxdepth 1 -type f -name '*.ply' -printf '%f\n' | sed 's/\.ply$//' | sort
 }
 
 while IFS= read -r instance_name; do

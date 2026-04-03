@@ -1218,7 +1218,7 @@ def generate_phase_models_for_instance(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a gastric peristaltic phase-sequence model set")
-    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under stomach_pcd")
     parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
     parser.add_argument("--monitor-path", type=str, default=None, help="Monitor stream used to determine phase count")
     parser.add_argument("--base-mesh-path", type=str, default=None, help="Optional existing phase-0 mesh to reuse as the shared base mesh template")
@@ -1235,7 +1235,7 @@ def main() -> None:
         help="Directory where the generated phase-sequence model run folder will be created; defaults to the instance-specific simuilate_data directory",
     )
     parser.add_argument("--gt-mesh-dir", type=str, default="", help="Optional explicit GT mesh sync directory")
-    parser.add_argument("--batch-all-references", action="store_true", help="Generate phase-sequence models for all point clouds under benchmark/stomach_pcd")
+    parser.add_argument("--batch-all-references", action="store_true", help="Generate phase-sequence models for all point clouds under stomach_pcd")
     parser.add_argument("--no-sync-gt", action="store_true", help="Do not sync generated meshes into the instance GT mesh directory")
     parser.add_argument(
         "--narrowing-scale",
@@ -1318,7 +1318,7 @@ def main() -> None:
     if args.batch_all_references:
         reference_paths = list_reference_pointclouds()
         if not reference_paths:
-            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+            raise FileNotFoundError("No reference point clouds found under stomach_pcd")
         for reference_path in reference_paths:
             instance_output_dir = (output_base_dir / reference_path.stem) if output_base_dir is not None else None
             instance_gt_mesh_dir = (gt_mesh_dir / reference_path.stem) if gt_mesh_dir is not None else None

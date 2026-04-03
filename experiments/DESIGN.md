@@ -119,9 +119,9 @@
 
 1. `test/monitor_stream.npz`
 2. `test/scanner_sequence.npz`
-3. `benchmark/stomach_pcd/niujiao01.ply`
+3. `stomach_pcd/niujiao01.ply`
 
-如果扩展到多实例真实/半真实展示，则其他参考点云统一位于 `benchmark/stomach_pcd/*.ply`，对应派生扫描数据位于 `benchmark/instances/<instance>/`。
+如果扩展到多实例真实/半真实展示，则其他参考点云统一位于 `stomach_pcd/*.ply`，对应派生扫描数据位于 `benchmark/instances/<instance>/`。
 
 这里不要求真实数据有 GT，也不要求专家评分。真实数据部分只需要回答：模型输出是否连续、是否平滑、是否没有明显结构崩坏。
 

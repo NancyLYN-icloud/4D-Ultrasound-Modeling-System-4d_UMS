@@ -276,7 +276,7 @@ def generate_from_phase_models(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Regenerate test scanner_sequence.npz from phase-sequence stomach models")
-    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under stomach_pcd")
     parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
     parser.add_argument("--phase-model-dir", type=str, default="", help="Specific phase_sequence_models_run directory to use")
     parser.add_argument("--no-png", action="store_true", help="Do not rewrite scanner PNG images")
@@ -284,7 +284,7 @@ def main() -> None:
     parser.add_argument("--duration-seconds", type=float, default=None, help="Output scanner duration in seconds")
     parser.add_argument("--monitor-path", type=str, default=None, help="Optional explicit monitor_stream.npz path")
     parser.add_argument("--scanner-template-path", type=str, default=None, help="Optional scanner_sequence.npz whose timestamps will be reused")
-    parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under benchmark/stomach_pcd")
+    parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under stomach_pcd")
     args = parser.parse_args()
 
     if (args.fps is None) != (args.duration_seconds is None):
@@ -296,7 +296,7 @@ def main() -> None:
     if args.batch_all_references:
         reference_paths = list_reference_pointclouds()
         if not reference_paths:
-            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+            raise FileNotFoundError("No reference point clouds found under stomach_pcd")
         for reference_path in reference_paths:
             instance_paths = resolve_instance_paths(instance_name=reference_path.stem, reference_ply=reference_path)
             phase_model_dir = Path(args.phase_model_dir).expanduser().resolve() if args.phase_model_dir else _latest_phase_model_dir(instance_paths.phase_model_base_dir)

@@ -636,17 +636,17 @@ def main() -> None:
 	import argparse
 
 	parser = argparse.ArgumentParser(description="Regenerate scanner_sequence.npz for one or more stomach reference instances")
-	parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+	parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under stomach_pcd")
 	parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
 	parser.add_argument("--monitor-path", type=str, default=str(DEFAULT_MONITOR_PATH), help="Monitor stream used to derive gastric period")
-	parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under benchmark/stomach_pcd")
+	parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under stomach_pcd")
 	args = parser.parse_args()
 
 	monitor_path = Path(args.monitor_path).expanduser().resolve() if args.monitor_path else None
 	if args.batch_all_references:
 		reference_paths = list_reference_pointclouds()
 		if not reference_paths:
-			raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+			raise FileNotFoundError("No reference point clouds found under stomach_pcd")
 		for reference_path in reference_paths:
 			generate_scanner_stream_for_instance(reference_path.stem, reference_path, monitor_path)
 		return

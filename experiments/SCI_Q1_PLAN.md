@@ -23,7 +23,7 @@
 
 每个实例当前都具备：
 
-1. 参考点云：`benchmark/stomach_pcd/<instance>.ply`
+1. 参考点云：`stomach_pcd/<instance>.ply`
 2. 监测流：`benchmark/instances/<instance>/monitor_stream.npz`
 3. 扫描流：`benchmark/instances/<instance>/scanner_sequence.npz`
 4. GT 模型序列：`simuilate_data/instances/<instance>/phase_sequence_models_run_*/`

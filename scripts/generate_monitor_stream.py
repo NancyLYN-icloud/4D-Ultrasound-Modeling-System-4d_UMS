@@ -232,15 +232,15 @@ def generate_monitor_dataset(output_npz: Path, output_img_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic monitor_stream.npz and monitor PNGs")
-    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under benchmark/stomach_pcd")
+    parser.add_argument("--instance-name", type=str, default=None, help="Named stomach instance under stomach_pcd")
     parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
-    parser.add_argument("--batch-all-references", action="store_true", help="Generate monitor data for all point clouds under benchmark/stomach_pcd")
+    parser.add_argument("--batch-all-references", action="store_true", help="Generate monitor data for all point clouds under stomach_pcd")
     args = parser.parse_args()
 
     if args.batch_all_references:
         reference_paths = list_reference_pointclouds()
         if not reference_paths:
-            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+            raise FileNotFoundError("No reference point clouds found under stomach_pcd")
         for reference_path in reference_paths:
             instance_paths = resolve_instance_paths(instance_name=reference_path.stem, reference_ply=reference_path)
             generate_monitor_dataset(

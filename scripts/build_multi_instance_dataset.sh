@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python}"
+DATA_ROOT="${UMS_DATA_ROOT:-/home/liuyanan/data/Research_Data/4D-UMS}"
 
 PHASE_COUNT="${PHASE_COUNT:-}"
 NARROWING_SCALE="${NARROWING_SCALE:-1.0}"
@@ -17,16 +18,16 @@ shared_monitor_source() {
     if [[ -n "$MONITOR_PATH" ]]; then
         printf '%s\n' "$MONITOR_PATH"
     else
-        printf '%s\n' "/home/liuyanan/data/Research_Data/4D-UMS/benchmark/monitor_stream.npz"
+        printf '%s\n' "$DATA_ROOT/benchmark/monitor_stream.npz"
     fi
 }
 
 instance_monitor_target() {
     local instance_name="$1"
     if [[ "$instance_name" == "niujiao01" ]]; then
-        printf '%s\n' "/home/liuyanan/data/Research_Data/4D-UMS/benchmark/monitor_stream.npz"
+        printf '%s\n' "$DATA_ROOT/benchmark/monitor_stream.npz"
     else
-        printf '%s\n' "/home/liuyanan/data/Research_Data/4D-UMS/benchmark/instances/${instance_name}/monitor_stream.npz"
+        printf '%s\n' "$DATA_ROOT/benchmark/instances/${instance_name}/monitor_stream.npz"
     fi
 }
 
@@ -34,10 +35,11 @@ usage() {
     cat <<'EOF'
 Usage: build_multi_instance_dataset.sh [instance_name ...]
 
-Batch-build phase models and scanner sequences for all reference point clouds in benchmark/stomach_pcd,
+Batch-build phase models and scanner sequences for all reference point clouds in stomach_pcd,
 or for the explicitly listed instance names.
 
 Environment overrides:
+    UMS_DATA_ROOT      Dataset root, default: /home/liuyanan/data/Research_Data/4D-UMS
   PYTHON_BIN         Python launcher, default: conda run -n modeling_py310 python
   PHASE_COUNT        Optional explicit phase count
   NARROWING_SCALE    Phase-model narrowing scale, default: 1.0
@@ -115,13 +117,13 @@ instance_complete() {
     local mesh_dir
     local image_dir
     if [[ "$instance_name" == "niujiao01" ]]; then
-        scanner_path="/home/liuyanan/data/Research_Data/4D-UMS/benchmark/scanner_sequence.npz"
-        mesh_dir="/home/liuyanan/data/Research_Data/4D-UMS/simuilate_data/meshes"
-        image_dir="/home/liuyanan/data/Research_Data/4D-UMS/benchmark/image/scanner"
+        scanner_path="$DATA_ROOT/benchmark/scanner_sequence.npz"
+        mesh_dir="$DATA_ROOT/simuilate_data/meshes"
+        image_dir="$DATA_ROOT/benchmark/image/scanner"
     else
-        scanner_path="/home/liuyanan/data/Research_Data/4D-UMS/benchmark/instances/${instance_name}/scanner_sequence.npz"
-        mesh_dir="/home/liuyanan/data/Research_Data/4D-UMS/simuilate_data/instances/${instance_name}/meshes"
-        image_dir="/home/liuyanan/data/Research_Data/4D-UMS/benchmark/instances/${instance_name}/image/scanner"
+        scanner_path="$DATA_ROOT/benchmark/instances/${instance_name}/scanner_sequence.npz"
+        mesh_dir="$DATA_ROOT/simuilate_data/instances/${instance_name}/meshes"
+        image_dir="$DATA_ROOT/benchmark/instances/${instance_name}/image/scanner"
     fi
 
     [[ -f "$scanner_path" ]] || return 1
@@ -134,7 +136,7 @@ resolve_instances() {
         printf '%s\n' "${INSTANCES[@]}"
         return
     fi
-    find /home/liuyanan/data/Research_Data/4D-UMS/benchmark/stomach_pcd -maxdepth 1 -type f -name '*.ply' -printf '%f\n' | sed 's/\.ply$//' | sort
+    find "$DATA_ROOT/stomach_pcd" -maxdepth 1 -type f -name '*.ply' -printf '%f\n' | sed 's/\.ply$//' | sort
 }
 
 while IFS= read -r instance_name; do

@@ -183,7 +183,7 @@ $$
 
 ### 2. 数据与评测协议
 
-当前主定量实验基于项目中的受控胃部 4D 仿真链路构建。默认实例 `niujiao01` 的真值动态网格序列来自 `simuilate_data/meshes/` 下的当前 `run_004` 生成协议；与之配套的监测流和自由手扫描流分别由 `benchmark/monitor_stream.npz` 与 `benchmark/scanner_sequence.npz` 提供。新的多实例参考点云统一位于 `benchmark/stomach_pcd/`，其派生扫描数据与 GT 将分别写入 `benchmark/instances/<instance>/` 与 `simuilate_data/instances/<instance>/`。所有方法均以同一套相位分箱点云作为输入，而不是使用额外的稠密体数据或人工标注。
+当前主定量实验基于项目中的受控胃部 4D 仿真链路构建。早期单实例调试主要围绕 `niujiaoxing01` 展开，但正式论文口径应以当前多实例 benchmark 为主，而不是继续以单个默认实例叙述。新的多实例参考点云统一位于 `stomach_pcd/`，其派生扫描数据、监测流与真值动态网格分别写入 `benchmark/instances/<instance>/`、`benchmark/conditions/<condition>/instances/<instance>/` 与 `simuilate_data/instances/<instance>/`。所有方法均以同一套相位分箱点云作为输入，而不是使用额外的稠密体数据或人工标注。
 
 这一协议刻意匹配本文的目标场景：稀疏、带噪、置信度不均衡的自由手超声观测。因此，实验关注的核心不是单相位静态拟合能力，而是模型能否从不完整观测中恢复几何准确、时间连续且拓扑稳定的 4D 序列。
 
@@ -191,12 +191,12 @@ $$
 
 主结果表中仅保留四类动态方法，避免将静态方法与动态方法混杂在同一主表中造成解释混乱。
 
-1. **动态共享-参考对应正则**：代表模板传播或 correspondence 驱动的经典动态重建路线。
-2. **动态共享-连续形变场**：代表连续时空形变场路线。
-3. **动态共享-解耦运动潜码**：代表潜变量动态表示与运动解耦路线。
+1. **动态共享-参考对应正则**：本文将其作为第一类外部动态基线，用于代表“共享参考形状或 canonical surface + temporal correspondence regularization”的动态建模路线。该实现最接近近年以参考表面和规范空间形变为核心的软组织动态重建方法，可在文中表述为 *reference-correspondence regularized canonical deformation baseline*。从相关工作归类上看，它与 EndoSurf 一类 canonical deformable surface reconstruction 思路最为接近，但本文实现并非对某一篇论文的逐字复现，而是对该类方法范式的代表性实现。
+2. **动态共享-连续形变场**：本文将其作为第二类外部动态基线，用于代表连续时间或连续相位条件形变场路线，可在文中表述为 *continuous deformation-field baseline*。该实现与 DynoSurf 一类 temporally consistent dynamic surface reconstruction 方法最为接近，体现的是弱结构先验条件下依赖连续神经形变场统一建模动态过程的技术路线。
+3. **动态共享-解耦运动潜码**：本文将其作为第三类外部动态基线，用于代表形状与运动解耦的潜变量动态表示路线，可在文中表述为 *decoupled motion latent baseline*。该实现直接来源于对 *4D Myocardium Reconstruction with Decoupled Motion and Shape Model* 这一代表性工作的迁移与适配，因此是三条外部基线中与已发表具体方法对应关系最明确的一条。
 4. **动态共享-全局基残差**：即本文主方法，结合共享拓扑、低秩全局运动基和相位条件局部残差。
 
-这四种方法分别对应不同的动态建模哲学，而不是同一家族中的轻微变体，因此适合作为主结果对比对象。
+需要强调的是，前三种方法在代码实现上与本文主方法共享统一的数据接口、输入协议和训练预算控制，但在论文叙事中应被明确写为三类 *external-baseline paradigms*，而不是本文内部方法的轻微变体。这样既能保证评测协议一致，也能避免将“最接近某类近年方法”的实现误表述为对原论文的严格逐项复现。
 
 ### 4. 评价指标
 
@@ -215,6 +215,15 @@ $$
 
 因此，正文中应明确说明该表是 `best-known per-method results under the current evaluation protocol`，而不能写成严格的 equal-budget 主表。为回应公平性问题，补充材料中同时保留统一预算的对比结果。
 
+若正文表格采用英文方法名，建议统一使用如下命名，以减少内部工程命名对审稿阅读的干扰：
+
+1. `Ref-Corr Canonical Deform`
+2. `Continuous Deformation Field`
+3. `Decoupled Motion Latent`
+4. `Global-Basis Residual (Ours)`
+
+并可在表注中补充说明：前三者分别表示本文对三类代表性外部动态建模范式的实现，第四者为本文提出的主方法。
+
 基于当前全部实验归档，本文主结果表采用如下四个 run：
 
 1. `动态共享-全局基残差`：`exp_20260326_062808_global-basis-historical-best-newgt-run004`
@@ -228,17 +237,20 @@ $$
 
 这一差距不应简单理解为训练轮数不足。已有实验表明，连续形变场与解耦运动潜码从 `6000-step` 提升到更高预算后并未出现实质性跃升，因此其瓶颈更可能来自表示结构与任务不匹配，而不是单纯未收敛。当前任务要求模型在稀疏相位点云监督下，同时满足跨相位拓扑一致性、全局周期运动规律性和局部动态细节恢复三项约束。本文方法通过共享基准网格、低秩全局运动基和相位条件局部残差，直接把这三类需求编码进表示结构中；而连续形变场与潜码方法依赖更弱的结构先验，因此更容易出现过平滑、局部漂移或动态表达不足。
 
+对于外部方法的论文口径，应避免把这些结果解读为“某篇原始外部论文在本文场景下失败”，更稳妥的表述是：canonical correspondence、continuous deformation field 与 decoupled motion latent 这三类代表性外部动态建模范式，在当前弱观测自由手超声胃部 4D 场景下均存在不同程度的适配困难。其中，参考对应正则仍能提供相对稳定的结构约束；连续形变场在稀疏和扰动条件下更容易出现表达不足与局部漂移；解耦运动潜码虽然在跨领域动态建模中具有代表性，但在当前观测退化场景下对噪声与采样稀疏性更为敏感。
+
 从论文叙事角度看，这一点非常重要。本文的贡献不只是取得了更低误差，而是实验表明：在弱观测自由手超声 4D 建模中，**结构化运动先验本身就是性能差异的关键来源**。
 
 ### 7. 受控退化鲁棒性实验
 
-在主结果之外，本文进一步设计受控退化实验，以回答当观测条件变差时方法是否仍然稳健。结合当前工程计划，建议围绕同一批胃部实例构造三种观测条件：`Clean`、`Sparse` 与 `PoseNoise`。其中，`PoseNoise` 明确定义为仅对自由手扫描的位姿元数据施加平滑扰动，图像帧与 monitor 信号保持不变。在这一部分，不必重新比较全部方法，而应保留三个最具代表性的动态方法：
+在主结果之外，本文进一步设计受控退化实验，以回答当观测条件变差时方法是否仍然稳健。结合当前工程计划，建议围绕同一批胃部实例构造四种观测条件：`Clean`、`Sparse`、`PoseNoise` 与 `ImageNoise`。其中，`PoseNoise` 明确定义为仅对自由手扫描的位姿元数据施加平滑扰动，图像帧与 monitor 信号保持不变；`ImageNoise` 则用于模拟超声图像质量恶化对下游 4D 重建的影响。在这一部分，不建议再删减外部方法，而应继续保留完整的三类外部基线与本文方法： 
 
-1. 最强经典动态基线：参考对应正则。
-2. 最强弱结构先验现代基线：连续形变场与解耦运动潜码中择优保留一个。
-3. 本文方法：全局基残差。
+1. 参考对应正则：代表 canonical/reference correspondence 范式。
+2. 连续形变场：代表 continuous deformation-field 范式。
+3. 解耦运动潜码：代表 decoupled motion latent 范式。
+4. 本文方法：全局基残差。
 
-这样既能控制计算成本，也更符合正式论文的表述逻辑：主表覆盖完整方法谱系，鲁棒性实验只比较最有代表性的强基线。
+这样做的好处是，鲁棒性实验不再只是“本文方法对某一个强基线”的局部比较，而是能够回答不同外部动态建模范式在观测退化下的性能退化规律，从而更有力地支撑本文关于结构化运动先验与弱观测鲁棒性的主张。
 
 ### 8. 消融实验
 
@@ -254,7 +266,7 @@ $$
 
 ### 9. 真实无标注案例
 
-真实数据部分不承担主定量证据角色，而是作为方法可用性的补充验证。当前可直接使用的默认实例数据包括 `benchmark/monitor_stream.npz`、`benchmark/scanner_sequence.npz` 与 `benchmark/stomach_pcd/niujiao01.ply`；若扩展到多实例展示，可进一步使用 `benchmark/stomach_pcd/*.ply` 及其实例化输出目录。这一部分建议报告以下内容：
+真实数据部分不承担主定量证据角色，而是作为方法可用性的补充验证。当前可直接使用的默认实例数据包括 `benchmark/monitor_stream.npz`、`benchmark/scanner_sequence.npz` 与 `stomach_pcd/niujiaoxing01.ply`；若扩展到多实例展示，可进一步使用 `stomach_pcd/*.ply` 及其实例化输出目录。这一部分建议报告以下内容：
 
 1. 多相位连续网格可视化。
 2. 重建表面与观测点云的叠加图。

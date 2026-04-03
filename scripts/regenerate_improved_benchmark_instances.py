@@ -174,7 +174,7 @@ def main() -> None:
     else:
         instance_names = [path.stem for path in list_reference_pointclouds()]
         if not instance_names:
-            raise FileNotFoundError("No reference point clouds found under benchmark/stomach_pcd")
+            raise FileNotFoundError("No reference point clouds found under stomach_pcd")
 
     for instance_name in instance_names:
         regenerate_instance(instance_name=instance_name, source_root=args.source_root.expanduser().resolve(), rewrite_pngs=not args.no_png)

@@ -8,7 +8,7 @@ from .paths import data_path
 
 
 DEFAULT_INSTANCE_NAME = "niujiao01"
-REFERENCE_DIR = data_path("benchmark", "stomach_pcd")
+REFERENCE_DIR = data_path("stomach_pcd")
 LEGACY_REFERENCE_PLY = data_path("benchmark", "stomach.ply")
 DEFAULT_TEST_ROOT = data_path("benchmark")
 INSTANCE_TEST_ROOT = data_path("benchmark", "instances")
