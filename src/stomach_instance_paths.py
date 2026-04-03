@@ -124,3 +124,21 @@ def resolve_scanner_template_path(paths: StomachInstancePaths, explicit_path: Pa
     if paths.scanner_sequence.exists():
         return paths.scanner_sequence
     return shared_scanner_sequence_path()
+
+
+def resolve_gt_mesh_input_path(paths: StomachInstancePaths, explicit_path: Path | None = None) -> Path:
+    if explicit_path is not None:
+        return Path(explicit_path).expanduser().resolve()
+    if paths.gt_mesh_dir.exists():
+        return paths.gt_mesh_dir
+
+    phase_model_dirs = sorted(
+        path for path in paths.phase_model_base_dir.iterdir()
+        if path.is_dir() and path.name.startswith("phase_sequence_models_run_")
+    ) if paths.phase_model_base_dir.exists() else []
+    for phase_model_dir in reversed(phase_model_dirs):
+        candidate = phase_model_dir / "pointclouds" / "meshes"
+        if candidate.exists():
+            return candidate
+
+    return paths.gt_mesh_dir

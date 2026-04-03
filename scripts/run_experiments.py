@@ -29,7 +29,7 @@ from src.data_acquisition.monitor import UltrasoundMonitor
 from src.modeling.metrics import compute_chamfer_distance, compute_hausdorff_distance, compute_temporal_smoothness
 from src.paths import data_path
 from src.pipelines.multicycle_reconstruction import MulticycleReconstructionPipeline, PipelineOutput
-from src.stomach_instance_paths import resolve_instance_paths
+from src.stomach_instance_paths import resolve_gt_mesh_input_path, resolve_instance_paths
 
 
 DEFAULT_MONITOR_PATH = data_path("benchmark", "monitor_stream.npz")
@@ -446,7 +446,7 @@ def _resolve_dataset_paths(
     instance_paths = resolve_instance_paths(instance_name=instance_name)
     resolved_monitor = instance_paths.monitor_stream if monitor == DEFAULT_MONITOR_PATH else monitor
     resolved_scanner = instance_paths.scanner_sequence if scanner == DEFAULT_SCANNER_PATH else scanner
-    resolved_gt = instance_paths.gt_mesh_dir if gt_mesh == DEFAULT_GT_MESH_PATH else gt_mesh
+    resolved_gt = resolve_gt_mesh_input_path(instance_paths) if gt_mesh == DEFAULT_GT_MESH_PATH else gt_mesh
     return resolved_monitor, resolved_scanner, resolved_gt
 
 

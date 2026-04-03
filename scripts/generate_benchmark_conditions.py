@@ -11,7 +11,7 @@ import sys
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +26,7 @@ DEFAULT_CONDITION_MANIFEST = ROOT / "experiments" / "benchmark_condition_manifes
 DEFAULT_CONDITION_ROOT = data_path("benchmark", "conditions")
 SPARSE_CONDITION = "Sparse"
 POSE_NOISE_CONDITION = "PoseNoise"
+IMAGE_NOISE_CONDITION = "ImageNoise"
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ def _condition_slug(condition: str) -> str:
         return "sparse"
     if lowered in {"posenoise", "pose_noise", "pose-noise", "noisypose", "noisy_pose", "noisy-pose"}:
         return "pose_noise"
+    if lowered in {"imagenoise", "image_noise", "image-noise", "noisyimage", "noisy_image", "noisy-image"}:
+        return "image_noise"
     raise ValueError(f"Unsupported condition: {condition}")
 
 
@@ -105,12 +108,15 @@ def _symlink_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _write_npz(path: Path, **arrays: np.ndarray) -> None:
+def _write_npz(path: Path, compressed: bool = True, **arrays: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=str(path.parent), prefix=path.stem + "_", suffix=".npz", delete=False) as handle:
         tmp_path = Path(handle.name)
     try:
-        np.savez_compressed(tmp_path, **arrays)
+        if compressed:
+            np.savez_compressed(tmp_path, **arrays)
+        else:
+            np.savez(tmp_path, **arrays)
         tmp_path.replace(path)
     except Exception:
         if tmp_path.exists():
@@ -146,6 +152,20 @@ def _build_frames_array(scanner_dir: Path, indices: np.ndarray) -> np.ndarray:
     for out_idx, src_idx in enumerate(indices[1:], start=1):
         frames[out_idx] = _read_scanner_frame(scanner_dir, int(src_idx))
     return frames
+
+
+def _write_scanner_pngs(scanner_dir: Path, frames: np.ndarray) -> None:
+    _remove_path(scanner_dir)
+    scanner_dir.mkdir(parents=True, exist_ok=True)
+    for index, frame in enumerate(frames):
+        Image.fromarray(frame.astype(np.uint8), mode="L").save(scanner_dir / f"scanner_{index:04d}.png")
+
+
+def _create_frame_memmap(frame_count: int, frame_shape: tuple[int, int], prefix: str) -> tuple[Path, np.memmap]:
+    with tempfile.NamedTemporaryFile(prefix=prefix, suffix=".npy", delete=False) as handle:
+        tmp_path = Path(handle.name)
+    memmap = np.lib.format.open_memmap(tmp_path, mode="w+", dtype=np.uint8, shape=(frame_count, frame_shape[0], frame_shape[1]))
+    return tmp_path, memmap
 
 
 def _rotation_matrices_from_rotvec(rotvecs: np.ndarray) -> np.ndarray:
@@ -345,6 +365,111 @@ def _build_pose_noise_condition(
     }
 
 
+def _build_image_noise_condition(
+    row: BenchmarkInstanceRow,
+    condition_root: Path,
+    image_noise_std: float,
+    image_bias_std: float,
+    image_gain_std: float,
+    image_blur_sigma: float,
+    noise_sigma_frames: float,
+    seed: int,
+    materialize_scanner_pngs: bool,
+    overwrite: bool,
+) -> dict[str, str]:
+    target_root = _condition_instance_root(condition_root, IMAGE_NOISE_CONDITION, row.instance_name)
+    if overwrite:
+        _remove_path(target_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    timestamps, positions, orientations = _load_scanner_metadata(row.scanner_sequence)
+    scanner_dir = row.clean_scanner_image_dir
+    frame_count = len(timestamps)
+    first_frame = _read_scanner_frame(scanner_dir, 0)
+
+    rng = np.random.default_rng(seed + 10007 + sum(ord(ch) for ch in row.instance_name))
+    bias_noise = _smooth_noise(rng, frame_count, 1, image_bias_std, noise_sigma_frames)[:, 0]
+    gain_noise = 1.0 + _smooth_noise(rng, frame_count, 1, image_gain_std, noise_sigma_frames)[:, 0]
+    frame_memmap_path, noisy_frames = _create_frame_memmap(frame_count, tuple(first_frame.shape), f"{row.instance_name}_image_noise_")
+
+    scanner_png_dir = target_root / "image" / "scanner"
+    if materialize_scanner_pngs:
+        _remove_path(scanner_png_dir)
+        scanner_png_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        _remove_path(scanner_png_dir)
+
+    try:
+        for frame_index in range(frame_count):
+            frame = _read_scanner_frame(scanner_dir, frame_index).astype(np.float32)
+            frame += rng.normal(0.0, image_noise_std, size=frame.shape).astype(np.float32)
+            frame = frame * np.float32(gain_noise[frame_index]) + np.float32(bias_noise[frame_index])
+            if image_blur_sigma > 0.0:
+                frame = gaussian_filter(frame, sigma=image_blur_sigma, mode="nearest")
+            frame_uint8 = np.clip(np.rint(frame), 0.0, 255.0).astype(np.uint8)
+            noisy_frames[frame_index] = frame_uint8
+            if materialize_scanner_pngs:
+                Image.fromarray(frame_uint8, mode="L").save(scanner_png_dir / f"scanner_{frame_index:04d}.png")
+
+        noisy_frames.flush()
+
+        noisy_scanner = target_root / "scanner_sequence.npz"
+        _write_npz(
+            noisy_scanner,
+            compressed=False,
+            frames=noisy_frames,
+            timestamps=timestamps.astype(np.float64),
+            positions=positions.astype(np.float64),
+            orientations=orientations.astype(np.float64),
+        )
+    finally:
+        try:
+            del noisy_frames
+        finally:
+            if frame_memmap_path.exists():
+                frame_memmap_path.unlink()
+
+    _symlink_or_copy(row.monitor_stream, target_root / "monitor_stream.npz")
+    _symlink_or_copy(row.clean_monitor_image_dir, target_root / "image" / "monitor")
+
+    metadata_path = target_root / "condition_metadata.json"
+    _write_metadata(
+        metadata_path,
+        {
+            "condition": IMAGE_NOISE_CONDITION,
+            "instance_name": row.instance_name,
+            "source_scanner_sequence": str(row.scanner_sequence),
+            "source_scanner_image_dir": str(scanner_dir),
+            "source_monitor_stream": str(row.monitor_stream),
+            "image_noise_std": image_noise_std,
+            "image_bias_std": image_bias_std,
+            "image_gain_std": image_gain_std,
+            "image_blur_sigma": image_blur_sigma,
+            "noise_sigma_frames": noise_sigma_frames,
+            "seed": seed,
+            "definition": "Scanner image perturbation only: scanner poses and monitor stream are unchanged.",
+            "image_frames_changed": True,
+            "monitor_stream_changed": False,
+            "scanner_pose_changed": False,
+            "scanner_pngs_materialized": materialize_scanner_pngs,
+        },
+    )
+
+    return {
+        "instance_name": row.instance_name,
+        "shape_family": row.shape_family,
+        "split": row.split,
+        "condition": IMAGE_NOISE_CONDITION,
+        "reference_ply": str(row.reference_ply),
+        "monitor_stream": str(target_root / "monitor_stream.npz"),
+        "scanner_sequence": str(noisy_scanner),
+        "phase_model_dir": str(row.phase_model_dir),
+        "phase_summary": str(row.phase_summary),
+        "condition_root": str(target_root),
+        "condition_metadata": str(metadata_path),
+    }
+
+
 def _clean_manifest_row(row: BenchmarkInstanceRow) -> dict[str, str]:
     return {
         "instance_name": row.instance_name,
@@ -387,8 +512,8 @@ def main() -> None:
     parser.add_argument(
         "--conditions",
         nargs="+",
-        default=["Sparse", "PoseNoise"],
-        choices=["Sparse", "PoseNoise"],
+        default=["Sparse", "PoseNoise", "ImageNoise"],
+        choices=["Sparse", "PoseNoise", "ImageNoise"],
         help="Derived conditions to generate",
     )
     parser.add_argument("--source-manifest", type=Path, default=DEFAULT_SOURCE_MANIFEST)
@@ -396,16 +521,26 @@ def main() -> None:
     parser.add_argument("--condition-root", type=Path, default=DEFAULT_CONDITION_ROOT)
     parser.add_argument("--instances", nargs="*", default=None, help="Optional instance names to process")
     parser.add_argument("--split", choices=["all", "dev", "test"], default="all")
-    parser.add_argument("--sparse-step", type=int, default=4, help="Keep every N-th scanner frame for the Sparse condition")
+    parser.add_argument("--sparse-step", type=int, default=2, help="Keep every N-th scanner frame for the Sparse condition")
     parser.add_argument(
         "--sparse-offset-mode",
         choices=["zero", "hash"],
         default="hash",
         help="Use a deterministic per-instance frame offset before sparse subsampling",
     )
-    parser.add_argument("--translation-noise-mm", type=float, default=2.5, help="Std target of smooth position noise in mm")
-    parser.add_argument("--rotation-noise-deg", type=float, default=4.0, help="Std target of smooth orientation noise in degrees")
-    parser.add_argument("--noise-sigma-frames", type=float, default=18.0, help="Temporal smoothing of pose noise in frames")
+    parser.add_argument("--translation-noise-mm", type=float, default=1.0, help="Std target of smooth position noise in mm")
+    parser.add_argument("--rotation-noise-deg", type=float, default=1.5, help="Std target of smooth orientation noise in degrees")
+    parser.add_argument("--noise-sigma-frames", type=float, default=24.0, help="Temporal smoothing of pose or image noise in frames")
+    parser.add_argument("--image-noise-std", type=float, default=6.0, help="Per-pixel Gaussian intensity noise std for the ImageNoise condition")
+    parser.add_argument("--image-bias-std", type=float, default=4.0, help="Smooth per-frame brightness bias std for the ImageNoise condition")
+    parser.add_argument("--image-gain-std", type=float, default=0.04, help="Smooth per-frame multiplicative gain std for the ImageNoise condition")
+    parser.add_argument("--image-blur-sigma", type=float, default=0.6, help="Light Gaussian blur sigma for the ImageNoise condition")
+    parser.add_argument(
+        "--materialize-image-noise-pngs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to write noisy scanner PNG files for ImageNoise in addition to storing frames in scanner_sequence.npz",
+    )
     parser.add_argument("--seed", type=int, default=20260331)
     parser.add_argument("--overwrite", action="store_true", help="Replace existing derived condition directories")
     args = parser.parse_args()
@@ -459,6 +594,23 @@ def main() -> None:
                 )
             )
             print(f"[BenchmarkConditions] Generated PoseNoise for {row.instance_name}")
+
+        if IMAGE_NOISE_CONDITION in args.conditions:
+            manifest_rows.append(
+                _build_image_noise_condition(
+                    row=row,
+                    condition_root=args.condition_root,
+                    image_noise_std=args.image_noise_std,
+                    image_bias_std=args.image_bias_std,
+                    image_gain_std=args.image_gain_std,
+                    image_blur_sigma=args.image_blur_sigma,
+                    noise_sigma_frames=args.noise_sigma_frames,
+                    seed=args.seed,
+                    materialize_scanner_pngs=args.materialize_image_noise_pngs,
+                    overwrite=args.overwrite,
+                )
+            )
+            print(f"[BenchmarkConditions] Generated ImageNoise for {row.instance_name}")
 
     manifest_rows.sort(key=lambda item: (item["instance_name"], item["condition"]))
     _write_condition_manifest(args.condition_manifest, manifest_rows)

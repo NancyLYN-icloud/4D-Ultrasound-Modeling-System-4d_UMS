@@ -27,7 +27,7 @@ from scripts.run_experiments import (
 )
 from src.config import PointCloudPhaseSummary
 from src.modeling.dynamic_surface_reconstruction import reconstruct_dynamic_meshes_from_pointclouds
-from src.stomach_instance_paths import resolve_instance_paths
+from src.stomach_instance_paths import resolve_gt_mesh_input_path, resolve_instance_paths
 
 
 def _load_phase_cache(pointcloud_root: Path) -> tuple[list[Path], dict[Path, PointCloudPhaseSummary], dict[Path, float]]:
@@ -209,7 +209,7 @@ def main() -> None:
         if args.scanner_path == DEFAULT_SCANNER_PATH:
             args.scanner_path = instance_paths.scanner_sequence
         if args.gt_mesh_path == DEFAULT_GT_MESH_PATH:
-            args.gt_mesh_path = instance_paths.gt_mesh_dir
+            args.gt_mesh_path = resolve_gt_mesh_input_path(instance_paths)
 
     run_dir = _make_run_dir(args.out_dir, args.mode, "single-dynamic-shared", args.run_name)
     artifact_dir = run_dir / "artifacts"
