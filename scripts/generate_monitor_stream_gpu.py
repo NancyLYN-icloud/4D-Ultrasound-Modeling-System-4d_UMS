@@ -24,8 +24,8 @@ def main() -> None:
         raise FileNotFoundError("No grouped reference point clouds matched the requested filters")
 
     for record in records:
-        generate_monitor_dataset(output_npz=record.monitor_stream, output_img_dir=record.monitor_image_dir)
-        print(f"[MonitorGPU] {record.instance_name} -> {record.monitor_stream}")
+        generate_monitor_dataset(output_npz=record.sim_monitor_stream, output_img_dir=record.sim_monitor_image_dir)
+        print(f"[MonitorGPU] {record.instance_name} -> {record.sim_monitor_stream}")
 
 
 if __name__ == "__main__":

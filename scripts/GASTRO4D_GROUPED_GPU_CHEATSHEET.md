@@ -6,7 +6,7 @@
 
 - 不修改、也不替换原有 CPU 脚本。
 - 直接适配你现在的分组数据组织方式。
-- 让 source、clean、phase model、condition 的目录结构保持一致。
+- 保持“先生成 simuilate_data，再生成 benchmark”的原有逻辑。
 - 更符合科研数据集常见的 `split/group/instance` 组织方式。
 
 ## 适用场景
@@ -38,9 +38,9 @@
 下面这条命令会完成 grouped GPU 流程的全部核心步骤：
 
 - 数据集根目录落盘
-- clean monitor 生成
-- phase model 生成
-- scanner sequence 生成
+- simuilate_data 监测信号生成
+- simuilate_data phase model 生成
+- 基于 simuilate_data 发布 benchmark clean 数据
 - clean manifest 构建
 - benchmark condition 生成
 
@@ -56,6 +56,7 @@ bash scripts/build_gastro4d_ussim_grouped_gpu.sh
 - `GPU_ID` 用来指定当前构建使用哪张 GPU。
 - `SOURCE_DATA_ROOT` 指向原始数据根目录。
 - `UMS_DATA_ROOT` 指向 grouped GPU 流程要写入的数据根目录。
+- `SCANNER_MODE` 默认就是 `improved`，表示直接基于 phase model 生成 improved scanner。
 - 这条命令只调用新加的 grouped GPU 脚本，不会把旧 CPU 流程改掉。
 
 ## 分步执行
@@ -84,25 +85,27 @@ scripts/materialize_gastro4d_ussim_dataset_gpu.py \
 - 同时会写出 `source_pointcloud_manifest_gpu.csv`，记录实例名、组别、split 和目标相对路径。
 - 如果你想减少磁盘复制，可结合脚本里的 `--link-mode symlink` 使用软链接模式。
 
-### 3. 生成 grouped clean 数据
+### 3. 先生成 simuilate_data，再发布 grouped benchmark clean 数据
 
 ```bash
 /home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_monitor_stream_gpu.py
 /home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_phase_sequence_models_gpu.py
-/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_scanner_from_phase_models_gpu.py --no-png
+/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_scanner_from_phase_models_gpu.py --scanner-mode improved --no-png
 ```
 
 这三步分别负责：
 
-- 为每个 grouped 实例生成 `monitor_stream`
-- 在 grouped phase 目录下生成 `phase_sequence_models_run_*`
-- 在 grouped clean 目录下生成 `scanner_sequence`
+- 先在 `simuilate_data/instances/<split>/<group>/<instance>/` 下生成 `monitor_stream`
+- 再在同一 grouped phase 目录下生成 `phase_sequence_models_run_*`
+- 最后让 `benchmark/instances/<split>/<group>/<instance>/` 基于前面的 `simuilate_data` 直接生成 improved `scanner_sequence`，并发布 clean `monitor_stream`
 
 说明：
 
 - 默认 `--no-png` 可减少磁盘占用。
 - 如果你要抽检图像生成质量，可移除 `--no-png`。
 - 如果只想处理部分组或部分实例，可以为这些脚本追加 `--groups` 或 `--instances` 参数。
+- 这一阶段的核心依赖关系是：`benchmark` 不是独立生成的，而是依托 `simuilate_data` 中的 phase model 结果直接生成。
+- `--scanner-mode improved` 对应原来 improved scanner 的切片逻辑，但这里不再经过 `instances_before` 中转。
 
 ### 4. 生成 grouped manifest 与 grouped benchmark conditions
 
@@ -135,15 +138,19 @@ scripts/generate_benchmark_conditions_gpu.py \
 - `$UMS_DATA_ROOT/benchmark/manifests/source_pointcloud_manifest_gpu.csv`
 - `$UMS_DATA_ROOT/benchmark/manifests/benchmark_manifest_gpu.csv`
 - `$UMS_DATA_ROOT/benchmark/manifests/benchmark_condition_manifest_gpu.csv`
+- `$UMS_DATA_ROOT/simuilate_data/instances/<split>/<group>/<instance>/monitor_stream.npz`
 - `$UMS_DATA_ROOT/benchmark/instances/<split>/<group>/<instance>/`
 - `$UMS_DATA_ROOT/simuilate_data/instances/<split>/<group>/<instance>/`
 - `$UMS_DATA_ROOT/benchmark/conditions/<condition>/<split>/<group>/<instance>/`
+
+其中 grouped GPU 默认产出的 `benchmark/instances/.../scanner_sequence.npz` 就是直接由 phase model 生成的 improved scanner 结果。
 
 ## 与旧版流程的区别
 
 相对于旧版 `Gastro4D-USSim` 说明文档，这一版的主要区别是：
 
 - 不再假设 `stomach_pcd` 是扁平目录。
+- `simuilate_data` 先生成，`benchmark` 后生成。
 - clean 输出按 `split/group/instance` 组织。
 - phase model 输出按 `split/group/instance` 组织。
 - condition 输出也按 `condition/split/group/instance` 组织。

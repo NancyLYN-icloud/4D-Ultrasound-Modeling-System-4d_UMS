@@ -26,12 +26,20 @@ class GroupedReferencePaths:
         return self.clean_root / "monitor_stream.npz"
 
     @property
+    def sim_monitor_stream(self) -> Path:
+        return self.phase_model_base_dir / "monitor_stream.npz"
+
+    @property
     def scanner_sequence(self) -> Path:
         return self.clean_root / "scanner_sequence.npz"
 
     @property
     def monitor_image_dir(self) -> Path:
         return self.clean_root / "image" / "monitor"
+
+    @property
+    def sim_monitor_image_dir(self) -> Path:
+        return self.phase_model_base_dir / "image" / "monitor"
 
     @property
     def scanner_image_dir(self) -> Path:

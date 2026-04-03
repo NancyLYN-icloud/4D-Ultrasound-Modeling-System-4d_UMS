@@ -15,6 +15,7 @@ SOURCE_GROUPS="${SOURCE_GROUPS:-stomachPCD_dev stomachPCD_01 stomachPCD_02}"
 CONDITIONS="${CONDITIONS:-Sparse PoseNoise ImageNoise}"
 LINK_MODE="${LINK_MODE:-copy}"
 WRITE_PNGS="${WRITE_PNGS:-0}"
+SCANNER_MODE="${SCANNER_MODE:-improved}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "Python launcher not found: $PYTHON_BIN" >&2
@@ -43,20 +44,27 @@ echo "[Gastro4D Grouped GPU] groups=${GROUP_ARRAY[*]}"
 
 export UMS_DATA_ROOT
 
+echo "[Gastro4D Grouped GPU] stage=simulate monitor"
 "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_monitor_stream_gpu.py" --groups "${GROUP_ARRAY[@]}"
+
+echo "[Gastro4D Grouped GPU] stage=simulate phase-models"
 "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_phase_sequence_models_gpu.py" --groups "${GROUP_ARRAY[@]}"
 
 if [[ "$WRITE_PNGS" == "1" ]]; then
-    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models_gpu.py" --groups "${GROUP_ARRAY[@]}"
+    echo "[Gastro4D Grouped GPU] stage=benchmark scanner-with-png mode=$SCANNER_MODE"
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models_gpu.py" --groups "${GROUP_ARRAY[@]}" --scanner-mode "$SCANNER_MODE"
 else
-    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models_gpu.py" --groups "${GROUP_ARRAY[@]}" --no-png
+    echo "[Gastro4D Grouped GPU] stage=benchmark scanner-no-png mode=$SCANNER_MODE"
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models_gpu.py" --groups "${GROUP_ARRAY[@]}" --scanner-mode "$SCANNER_MODE" --no-png
 fi
 
+echo "[Gastro4D Grouped GPU] stage=benchmark manifest"
 "$PYTHON_BIN" "$REPO_ROOT/scripts/build_benchmark_manifest_gpu.py" \
     --groups "${GROUP_ARRAY[@]}" \
     --output "$UMS_DATA_ROOT/benchmark/manifests/benchmark_manifest_gpu.csv" \
     --skip-incomplete
 
+echo "[Gastro4D Grouped GPU] stage=benchmark conditions"
 "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_benchmark_conditions_gpu.py" \
     --conditions "${CONDITION_ARRAY[@]}" \
     --source-manifest "$UMS_DATA_ROOT/benchmark/manifests/benchmark_manifest_gpu.csv" \

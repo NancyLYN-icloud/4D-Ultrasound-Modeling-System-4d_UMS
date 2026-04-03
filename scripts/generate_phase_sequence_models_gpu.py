@@ -76,7 +76,7 @@ def main() -> None:
         generate_phase_models_for_instance(
             instance_name=record.instance_name,
             reference_ply=record.reference_ply,
-            monitor_stream=monitor_path or record.monitor_stream,
+            monitor_stream=monitor_path or record.sim_monitor_stream,
             output_base_dir=record.phase_model_base_dir,
             gt_mesh_dir=record.gt_mesh_dir,
             base_mesh_path=base_mesh_path,

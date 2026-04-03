@@ -45,15 +45,15 @@ def main() -> None:
     source_root = args.source_data_root.expanduser().resolve()
     dataset_root = args.dataset_root.expanduser().resolve() if args.dataset_root else (source_root / args.dataset_name)
     stomach_root = dataset_root / "stomach_pcd"
-    benchmark_root = dataset_root / "benchmark"
     simulate_root = dataset_root / "simuilate_data"
+    benchmark_root = dataset_root / "benchmark"
     manifest_root = benchmark_root / "manifests"
 
     stomach_root.mkdir(parents=True, exist_ok=True)
+    (simulate_root / "instances").mkdir(parents=True, exist_ok=True)
     (benchmark_root / "instances").mkdir(parents=True, exist_ok=True)
     (benchmark_root / "conditions").mkdir(parents=True, exist_ok=True)
     manifest_root.mkdir(parents=True, exist_ok=True)
-    (simulate_root / "instances").mkdir(parents=True, exist_ok=True)
 
     rows: list[dict[str, str]] = []
     copied_names: set[str] = set()
@@ -83,6 +83,7 @@ def main() -> None:
                     "split": split,
                     "source_relpath": str(pointcloud.relative_to(source_root)),
                     "target_relpath": str(target_path.relative_to(dataset_root)),
+                    "sim_monitor_relpath": f"simuilate_data/instances/{split}/{group_name}/{pointcloud.stem}/monitor_stream.npz",
                     "clean_root_relpath": f"benchmark/instances/{split}/{group_name}/{pointcloud.stem}",
                     "phase_root_relpath": f"simuilate_data/instances/{split}/{group_name}/{pointcloud.stem}",
                 }
@@ -98,6 +99,7 @@ def main() -> None:
                 "split",
                 "source_relpath",
                 "target_relpath",
+                "sim_monitor_relpath",
                 "clean_root_relpath",
                 "phase_root_relpath",
             ],
