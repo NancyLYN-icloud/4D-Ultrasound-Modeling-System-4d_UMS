@@ -275,4 +275,23 @@ def main() -> None:
         _publish_monitor_assets(
             source_monitor_path=resolved_monitor_path,
             source_monitor_image_dir=source_monitor_image_dir,
-            benchmark_monitor
+            benchmark_monitor_path=record.monitor_stream,
+            benchmark_monitor_image_dir=record.monitor_image_dir,
+        )
+        generate_grouped_scanner_sequence(
+            instance_name=record.instance_name,
+            reference_ply=record.reference_ply,
+            phase_model_dir=phase_model_dir,
+            monitor_path=record.monitor_stream,
+            scanner_template_path=scanner_template_path,
+            scanner_sequence_path=record.scanner_sequence,
+            scanner_image_dir=record.scanner_image_dir,
+            rewrite_pngs=not args.no_png,
+            fps=fps,
+            duration_seconds=duration_seconds,
+            scanner_mode=args.scanner_mode,
+        )
+
+
+if __name__ == "__main__":
+    main()
