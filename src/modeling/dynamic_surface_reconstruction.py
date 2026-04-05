@@ -2259,316 +2259,8 @@ class SharedTopologyDecoupledMotionReconstructor(CanonicalPhaseDeformationFieldR
         return results
 
 
-class SharedTopologyDecoupledShapeMotionReconstructor(CanonicalPhaseDeformationFieldReconstructor):
-    """Shared-topology reconstructor with a global shape latent and per-phase motion latents."""
-
-    @staticmethod
-    def _phase_tensor(phase: float, count: int, device: torch.device) -> torch.Tensor:
-        return torch.full((count,), float(phase), dtype=torch.float32, device=device)
-
-    @staticmethod
-    def _motion_lipschitz_loss(points: torch.Tensor, offsets: torch.Tensor, k: float) -> torch.Tensor:
-        if len(points) < 2:
-            return torch.zeros((), device=points.device)
-        pair_count = min(len(points) // 2, 256)
-        if pair_count < 1:
-            return torch.zeros((), device=points.device)
-        first = points[:pair_count]
-        second = points[-pair_count:]
-        offset_first = offsets[:pair_count]
-        offset_second = offsets[-pair_count:]
-        ratio = (offset_first - offset_second).norm(dim=-1) / ((first - second).norm(dim=-1) + 1e-3)
-        return F.relu(ratio - float(k)).mean()
-
-    def fit(
-        self,
-        pointcloud_paths: list[Path],
-        phase_confidences: Mapping[Path, float] | None = None,
-        phase_summaries: Mapping[Path, PointCloudPhaseSummary] | None = None,
-    ) -> SharedTopologyDynamicFit:
-        cfg = self.config
-        observations, center, scale = self._prepare_phase_observations(
-            pointcloud_paths,
-            phase_confidences=phase_confidences,
-            phase_summaries=phase_summaries,
-        )
-        base_phase_index = self._select_base_phase_index(observations)
-        base_mesh = self._build_base_mesh(observations[base_phase_index].pointcloud_path)
-        base_vertices_np, base_faces_np = self._normalize_base_mesh(base_mesh, center, scale)
-
-        sample_count = max(int(cfg.surface_batch_size * 2), 4096)
-        face_indices_np, barycentric_np = self._sample_surface_plan(base_mesh, sample_count, cfg.random_seed)
-        reference_points_np = self._sample_reference_points_numpy(base_vertices_np, base_faces_np, face_indices_np, barycentric_np)
-        support_radius = self._support_radius_normalized(scale)
-        phase_support_weights_np = self._compute_phase_support_weights(reference_points_np, observations, support_radius)
-        vertex_support_mask_np = self._compute_phase_support_mask(base_vertices_np, observations, support_radius)
-        initial_offsets_np = self._initialize_offsets(base_vertices_np, observations, vertex_support_mask_np)
-        bootstrap_reference_offsets_np = self._sample_reference_offsets_numpy(initial_offsets_np, base_faces_np, face_indices_np, barycentric_np)
-        edges_np = self._build_edges(base_faces_np)
-
-        rng = np.random.default_rng(cfg.random_seed)
-        torch.manual_seed(cfg.random_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(cfg.random_seed)
-
-        base_vertices = torch.from_numpy(base_vertices_np).to(self.device)
-        base_faces = torch.from_numpy(base_faces_np).to(self.device)
-        face_indices = torch.from_numpy(face_indices_np).to(self.device)
-        barycentric = torch.from_numpy(barycentric_np).to(self.device)
-        reference_points = torch.from_numpy(reference_points_np).to(self.device)
-        phase_support_weights = torch.from_numpy(phase_support_weights_np).to(self.device)
-        vertex_support_mask = torch.from_numpy(vertex_support_mask_np).to(self.device)
-        bootstrap_offsets = torch.from_numpy(initial_offsets_np).to(self.device)
-        bootstrap_reference_offsets = torch.from_numpy(bootstrap_reference_offsets_np).to(self.device)
-        edges = torch.from_numpy(edges_np).to(self.device)
-        phase_points = [torch.from_numpy(item.points).to(self.device) for item in observations]
-        phase_normals = [torch.from_numpy(item.normals).to(self.device) for item in observations]
-        phase_centroids = [torch.from_numpy(item.centroid).to(self.device) for item in observations]
-        phase_weights = np.asarray([item.weight for item in observations], dtype=np.float64)
-        sample_probabilities = phase_weights / max(np.sum(phase_weights), 1e-8)
-        phase_weight_tensor = torch.tensor(phase_weights, dtype=torch.float32, device=self.device)
-
-        shape_code = torch.nn.Parameter(torch.zeros(cfg.shape_latent_dim, dtype=torch.float32, device=self.device))
-        motion_codes = torch.nn.Embedding(len(observations), cfg.motion_latent_dim).to(self.device)
-        torch.nn.init.normal_(motion_codes.weight.data, 0.0, 1.0 / np.sqrt(max(cfg.motion_latent_dim, 1)))
-        shape_field = ShapeLatentField(cfg.shape_latent_dim, hidden_dim=max(16, cfg.canonical_hidden_dim // 8)).to(self.device)
-        motion_field = DecoupledMotionLatentField(cfg.motion_latent_dim, hidden_dim=max(16, cfg.deformation_hidden_dim // 8)).to(self.device)
-        optimizer = torch.optim.Adam([
-            {"params": shape_field.parameters(), "lr": cfg.learning_rate},
-            {"params": motion_field.parameters(), "lr": cfg.learning_rate},
-            {"params": motion_codes.parameters(), "lr": cfg.learning_rate},
-            {"params": [shape_code], "lr": cfg.learning_rate},
-        ])
-        overlap_loss_scale = self._overlap_loss_scale()
-
-        for step in range(cfg.train_steps):
-            correspondence_schedule_scale = self._correspondence_schedule_scale(step)
-            bootstrap_schedule_scale = self._bootstrap_schedule_scale(step)
-            phase_id = int(rng.choice(len(observations), p=sample_probabilities))
-            phase_value = observations[phase_id].phase
-            target_points = phase_points[phase_id]
-            target_normals = phase_normals[phase_id]
-            target_centroid = phase_centroids[phase_id]
-            phase_weight = phase_weight_tensor[phase_id]
-            support_weights = phase_support_weights[phase_id]
-            support_sum = support_weights.sum().clamp_min(1e-6)
-            supported_vertex_weights = vertex_support_mask[phase_id]
-            supported_vertex_sum = supported_vertex_weights.sum().clamp_min(1e-6)
-            unsupported_vertex_weights = 1.0 - supported_vertex_weights
-            unsupported_vertex_sum = unsupported_vertex_weights.sum().clamp_min(1e-6)
-
-            shape_code_vertices = shape_code.unsqueeze(0).expand(len(base_vertices), -1)
-            shape_vertex_offsets = shape_field(base_vertices, shape_code_vertices)
-            canonical_vertices = base_vertices + shape_vertex_offsets
-            phase_tensor_vertices = self._phase_tensor(phase_value, len(canonical_vertices), self.device)
-            motion_latent_vertices = motion_codes.weight[phase_id].unsqueeze(0).expand(len(canonical_vertices), -1)
-            motion_vertex_offsets = motion_field(canonical_vertices, phase_tensor_vertices, motion_latent_vertices)
-            predicted_vertices = canonical_vertices + motion_vertex_offsets
-            pred_samples, pred_normals = self._sample_surface_from_vertices(predicted_vertices, base_faces, face_indices, barycentric)
-
-            distances = torch.cdist(pred_samples, target_points)
-            pred_to_target, pred_nn = distances.min(dim=1)
-            target_to_pred, _ = distances.min(dim=0)
-            surface_loss = phase_weight * (((support_weights * pred_to_target.pow(2)).sum() / support_sum) + target_to_pred.pow(2).mean())
-            nearest_target_normals = target_normals[pred_nn]
-            normal_alignment = 1.0 - torch.abs(torch.sum(pred_normals * nearest_target_normals, dim=-1))
-            normal_loss = phase_weight * ((support_weights * normal_alignment).sum() / support_sum)
-            supported_pred_centroid = (pred_samples * support_weights.unsqueeze(-1)).sum(dim=0) / support_sum
-            centroid_loss = phase_weight * ((supported_pred_centroid - target_centroid) ** 2).mean()
-
-            shape_spatial_loss = ((shape_vertex_offsets[edges[:, 0]] - shape_vertex_offsets[edges[:, 1]]) ** 2).mean()
-            shape_offset_loss = shape_vertex_offsets.pow(2).mean()
-            motion_spatial_loss = ((motion_vertex_offsets[edges[:, 0]] - motion_vertex_offsets[edges[:, 1]]) ** 2).mean()
-            bootstrap_target_vertices = base_vertices + bootstrap_offsets[phase_id]
-            bootstrap_position_loss = (
-                (supported_vertex_weights * (predicted_vertices - bootstrap_target_vertices).pow(2).mean(dim=-1)).sum()
-                / supported_vertex_sum
-            )
-            unsupported_anchor_loss = (
-                (unsupported_vertex_weights * motion_vertex_offsets.pow(2).mean(dim=-1)).sum()
-                / unsupported_vertex_sum
-            )
-            unsupported_neighbor_mean = self._neighbor_mean_torch(motion_vertex_offsets, edges)
-            unsupported_laplacian_loss = (
-                (unsupported_vertex_weights * (motion_vertex_offsets - unsupported_neighbor_mean).pow(2).mean(dim=-1)).sum()
-                / unsupported_vertex_sum
-            )
-            lipschitz_loss = self._motion_lipschitz_loss(canonical_vertices, motion_vertex_offsets, cfg.motion_lipschitz_k)
-
-            shape_code_reference = shape_code.unsqueeze(0).expand(len(reference_points), -1)
-            shape_reference_offsets = shape_field(reference_points, shape_code_reference)
-            canonical_reference_points = reference_points + shape_reference_offsets
-
-            temporal_count = min(cfg.temporal_batch_size, len(reference_points_np))
-            temporal_idx = rng.choice(len(reference_points_np), size=temporal_count, replace=len(reference_points_np) < temporal_count)
-            temporal_idx_t = torch.from_numpy(temporal_idx.astype(np.int64)).to(self.device)
-            ref_temporal = canonical_reference_points[temporal_idx_t]
-            prev_idx_np, center_idx_np, next_idx_np = self._sample_phase_triplet_indices(len(observations), temporal_count, rng)
-            prev_idx = torch.from_numpy(prev_idx_np).to(self.device)
-            center_idx = torch.from_numpy(center_idx_np).to(self.device)
-            next_idx = torch.from_numpy(next_idx_np).to(self.device)
-            prev_phase = torch.tensor([observations[index].phase for index in prev_idx_np], dtype=torch.float32, device=self.device)
-            center_phase = torch.tensor([observations[index].phase for index in center_idx_np], dtype=torch.float32, device=self.device)
-            next_phase = torch.tensor([observations[index].phase for index in next_idx_np], dtype=torch.float32, device=self.device)
-            prev_codes = motion_codes(prev_idx)
-            center_codes = motion_codes(center_idx)
-            next_codes = motion_codes(next_idx)
-            motion_prev = motion_field(ref_temporal, prev_phase, prev_codes)
-            motion_now = motion_field(ref_temporal, center_phase, center_codes)
-            motion_next = motion_field(ref_temporal, next_phase, next_codes)
-            deformation_prev = ref_temporal + motion_prev
-            deformation_now = ref_temporal + motion_now
-            deformation_next = ref_temporal + motion_next
-            temporal_loss = 0.5 * (((deformation_next - deformation_now) ** 2).mean() + ((deformation_now - deformation_prev) ** 2).mean())
-            temporal_accel_loss = ((deformation_next - 2.0 * deformation_now + deformation_prev) ** 2).mean()
-            phase_consistency_loss = ((deformation_next - deformation_prev) ** 2).mean()
-            deformation_loss = motion_now.pow(2).mean()
-            motion_mean_loss = ((motion_prev + motion_now + motion_next) / 3.0).pow(2).mean()
-            shape_code_loss = shape_code.pow(2).mean()
-            motion_code_loss = motion_codes.weight.pow(2).mean()
-
-            correspondence_temporal_loss = torch.zeros((), device=self.device)
-            correspondence_accel_loss = torch.zeros((), device=self.device)
-            correspondence_phase_loss = torch.zeros((), device=self.device)
-            if correspondence_schedule_scale > 0.0 and (
-                cfg.correspondence_temporal_weight > 0.0
-                or cfg.correspondence_acceleration_weight > 0.0
-                or cfg.correspondence_phase_consistency_weight > 0.0
-            ):
-                correspondence_count = min(cfg.temporal_batch_size, len(reference_points_np))
-                correspondence_idx = rng.choice(len(reference_points_np), size=correspondence_count, replace=len(reference_points_np) < correspondence_count)
-                correspondence_idx_t = torch.from_numpy(correspondence_idx.astype(np.int64)).to(self.device)
-                ref_corr = canonical_reference_points[correspondence_idx_t]
-                corr_prev = ref_corr + motion_field(ref_corr, prev_phase, prev_codes)
-                corr_now = ref_corr + motion_field(ref_corr, center_phase, center_codes)
-                corr_next = ref_corr + motion_field(ref_corr, next_phase, next_codes)
-                correspondence_temporal_loss = 0.5 * (((corr_next - corr_now) ** 2).mean() + ((corr_now - corr_prev) ** 2).mean())
-                correspondence_accel_loss = ((corr_next - 2.0 * corr_now + corr_prev) ** 2).mean()
-                correspondence_phase_loss = ((corr_next - corr_prev) ** 2).mean()
-
-            periodic_count = min(cfg.temporal_batch_size, len(reference_points_np))
-            periodic_idx = rng.choice(len(reference_points_np), size=periodic_count, replace=len(reference_points_np) < periodic_count)
-            periodic_idx_t = torch.from_numpy(periodic_idx.astype(np.int64)).to(self.device)
-            ref_periodic = canonical_reference_points[periodic_idx_t]
-            periodic_stride = max(1, int(round(float(cfg.temporal_delta_phase) * len(observations))))
-            zero_phase = self._phase_tensor(observations[0].phase, len(ref_periodic), self.device)
-            one_phase = self._phase_tensor(observations[-1].phase, len(ref_periodic), self.device)
-            delta_phase = self._phase_tensor(observations[periodic_stride % len(observations)].phase, len(ref_periodic), self.device)
-            one_minus_delta_phase = self._phase_tensor(observations[(-periodic_stride) % len(observations)].phase, len(ref_periodic), self.device)
-            zero_codes = motion_codes.weight[0].unsqueeze(0).expand(len(ref_periodic), -1)
-            one_codes = motion_codes.weight[-1].unsqueeze(0).expand(len(ref_periodic), -1)
-            delta_codes = motion_codes.weight[periodic_stride % len(observations)].unsqueeze(0).expand(len(ref_periodic), -1)
-            one_minus_delta_codes = motion_codes.weight[(-periodic_stride) % len(observations)].unsqueeze(0).expand(len(ref_periodic), -1)
-            deformation_zero = ref_periodic + motion_field(ref_periodic, zero_phase, zero_codes)
-            deformation_one = ref_periodic + motion_field(ref_periodic, one_phase, one_codes)
-            deformation_delta = ref_periodic + motion_field(ref_periodic, delta_phase, delta_codes)
-            deformation_one_minus_delta = ref_periodic + motion_field(ref_periodic, one_minus_delta_phase, one_minus_delta_codes)
-            periodicity_loss = ((deformation_zero - deformation_one) ** 2).mean()
-            periodicity_loss = periodicity_loss + 0.5 * (((deformation_delta - deformation_zero) - (deformation_one - deformation_one_minus_delta)) ** 2).mean()
-
-            loss = (
-                surface_loss
-                + cfg.normal_weight * normal_loss
-                + cfg.centroid_weight * centroid_loss
-                + cfg.shape_spatial_weight * shape_spatial_loss
-                + cfg.shape_offset_reg_weight * shape_offset_loss
-                + cfg.spatial_smoothness_weight * motion_spatial_loss
-                + (bootstrap_schedule_scale * cfg.bootstrap_offset_weight) * bootstrap_position_loss
-                + cfg.unsupported_anchor_weight * unsupported_anchor_loss
-                + cfg.unsupported_laplacian_weight * unsupported_laplacian_loss
-                + cfg.motion_lipschitz_weight * lipschitz_loss
-                + cfg.motion_mean_weight * motion_mean_loss
-                + cfg.shape_code_reg_weight * shape_code_loss
-                + cfg.motion_code_reg_weight * motion_code_loss
-                + (cfg.temporal_weight * overlap_loss_scale) * temporal_loss
-                + cfg.temporal_acceleration_weight * temporal_accel_loss
-                + (cfg.phase_consistency_weight * overlap_loss_scale) * phase_consistency_loss
-                + (correspondence_schedule_scale * cfg.correspondence_temporal_weight * overlap_loss_scale) * correspondence_temporal_loss
-                + (correspondence_schedule_scale * cfg.correspondence_acceleration_weight) * correspondence_accel_loss
-                + (correspondence_schedule_scale * cfg.correspondence_phase_consistency_weight * overlap_loss_scale) * correspondence_phase_loss
-                + cfg.periodicity_weight * periodicity_loss
-                + cfg.deformation_weight * deformation_loss
-            )
-
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-
-            if (step + 1) % max(1, cfg.train_steps // 4) == 0 or step == 0:
-                print(
-                    "[SharedDynamicShapeMotion] "
-                    f"step={step + 1}/{cfg.train_steps} "
-                    f"loss={float(loss.detach().cpu()):.6f} "
-                    f"surface={float(surface_loss.detach().cpu()):.6f} "
-                    f"normal={float(normal_loss.detach().cpu()):.6f} "
-                    f"centroid={float(centroid_loss.detach().cpu()):.6f} "
-                    f"shape_spatial={float(shape_spatial_loss.detach().cpu()):.6f} "
-                    f"shape_off={float(shape_offset_loss.detach().cpu()):.6f} "
-                    f"motion_spatial={float(motion_spatial_loss.detach().cpu()):.6f} "
-                    f"boot={float(bootstrap_position_loss.detach().cpu()):.6f} "
-                    f"lip={float(lipschitz_loss.detach().cpu()):.6f} "
-                    f"motion_mean={float(motion_mean_loss.detach().cpu()):.6f} "
-                    f"shape_code={float(shape_code_loss.detach().cpu()):.6f} "
-                    f"motion_code={float(motion_code_loss.detach().cpu()):.6f} "
-                    f"corr_scale={correspondence_schedule_scale:.3f}"
-                )
-
-        with torch.no_grad():
-            shape_code_vertices = shape_code.unsqueeze(0).expand(len(base_vertices), -1)
-            canonical_vertex_offsets = shape_field(base_vertices, shape_code_vertices).detach().cpu().numpy().astype(np.float32)
-            canonical_vertices_np = base_vertices_np + canonical_vertex_offsets
-            phase_displacements: list[np.ndarray] = []
-            canonical_vertices_t = base_vertices + shape_field(base_vertices, shape_code.unsqueeze(0).expand(len(base_vertices), -1))
-            for phase_index, observation in enumerate(observations):
-                phase_tensor = self._phase_tensor(observation.phase, len(base_vertices), self.device)
-                phase_codes = motion_codes.weight[phase_index].unsqueeze(0).expand(len(base_vertices), -1)
-                motion_offsets = motion_field(canonical_vertices_t, phase_tensor, phase_codes).detach().cpu().numpy().astype(np.float32)
-                phase_displacements.append(motion_offsets)
-
-        final_displacements = np.stack(phase_displacements, axis=0)
-        final_displacements = self._propagate_unsupported_displacements(final_displacements, vertex_support_mask_np, edges_np)
-
-        run_dir = observations[0].pointcloud_path.parent
-        base_mesh_path = run_dir / cfg.out_subdir / "dynamic_base_mesh.ply"
-        base_mesh_path.parent.mkdir(parents=True, exist_ok=True)
-        denormalized_base_vertices = canonical_vertices_np * scale + center[None, :]
-        base_mesh_export = trimesh.Trimesh(vertices=denormalized_base_vertices, faces=base_faces_np, process=False)
-        _mesh_export(base_mesh_export, base_mesh_path)
-
-        return SharedTopologyDynamicFit(
-            base_vertices=canonical_vertices_np,
-            base_faces=base_faces_np,
-            displacements=final_displacements,
-            phases=[item.phase for item in observations],
-            center=center,
-            scale=float(scale),
-        )
-
-    def _export_phase_meshes(self, fit: SharedTopologyDynamicFit, mesh_dir: Path) -> list[DynamicMeshBuildResult]:
-        results: list[DynamicMeshBuildResult] = []
-        for phase, displacement in zip(fit.phases, fit.displacements):
-            mesh = self._mesh_from_offsets(fit, displacement)
-            if len(mesh.faces) < self.config.min_face_count:
-                print(f"[SharedDynamicShapeMotion] phase={phase:.3f}: face count too low ({len(mesh.faces)}), skip")
-                continue
-            mesh_name = f"dynamic_phase_{phase:.3f}.ply".replace(" ", "")
-            mesh_path = mesh_dir / mesh_name
-            _mesh_export(mesh, mesh_path)
-            results.append(
-                DynamicMeshBuildResult(
-                    phase=float(phase),
-                    mesh_path=mesh_path,
-                    vertices=int(len(mesh.vertices)),
-                    faces=int(len(mesh.faces)),
-                    watertight=bool(mesh.is_watertight),
-                    method="shared_topology_decoupled_shape_motion_latent",
-                )
-            )
-        return results
-
-
 class CPDFieldReferenceCorrespondenceReconstructor(CanonicalPhaseDeformationFieldReconstructor):
-    """CPD-Field variant with temporal regularization on shared reference correspondences."""
+    """CPD-guided variant with canonical-field supervision and shared reference correspondences."""
 
     @staticmethod
     def _phase_tensor(phase: float, count: int, device: torch.device) -> torch.Tensor:
@@ -2602,7 +2294,6 @@ class CPDFieldReferenceCorrespondenceReconstructor(CanonicalPhaseDeformationFiel
         face_indices = torch.from_numpy(face_indices_np).to(self.device)
         barycentric = torch.from_numpy(barycentric_np).to(self.device)
         reference_points, reference_normals = self._sample_surface_from_vertices(base_vertices, base_faces, face_indices, barycentric)
-
         phase_points = [torch.from_numpy(item.points).to(self.device) for item in observations]
         phase_normals = [torch.from_numpy(item.normals).to(self.device) for item in observations]
         phase_centroids = [torch.from_numpy(item.centroid).to(self.device) for item in observations]
@@ -2658,7 +2349,6 @@ class CPDFieldReferenceCorrespondenceReconstructor(CanonicalPhaseDeformationFiel
             ref_sample_normals = reference_normals[surface_idx_t]
             phase_tensor = self._phase_tensor(observations[phase_id].phase, len(ref_samples), self.device)
             deformed_samples = ref_samples + deformation_field(ref_samples, phase_tensor)
-
             distances = torch.cdist(deformed_samples, target_points)
             pred_to_target, pred_nn = distances.min(dim=1)
             target_to_pred, _ = distances.min(dim=0)
@@ -2676,7 +2366,6 @@ class CPDFieldReferenceCorrespondenceReconstructor(CanonicalPhaseDeformationFiel
             prev_phase = torch.tensor([observations[index].phase for index in prev_idx_np], dtype=torch.float32, device=self.device)
             center_phase = torch.tensor([observations[index].phase for index in center_idx_np], dtype=torch.float32, device=self.device)
             next_phase = torch.tensor([observations[index].phase for index in next_idx_np], dtype=torch.float32, device=self.device)
-
             deformation_prev = deformation_field(ref_temporal, prev_phase)
             deformation_now = deformation_field(ref_temporal, center_phase)
             deformation_next = deformation_field(ref_temporal, next_phase)
@@ -2768,10 +2457,6 @@ class CPDFieldReferenceCorrespondenceReconstructor(CanonicalPhaseDeformationFiel
             mesh_name = f"dynamic_phase_{phase:.3f}.ply".replace(" ", "")
             mesh_path = mesh_dir / mesh_name
             _mesh_export(mesh, mesh_path)
-            print(
-                f"[CPDRef] wrote {mesh_path} "
-                f"({len(mesh.vertices)} verts, {len(mesh.faces)} faces, watertight={mesh.is_watertight})"
-            )
             results.append(
                 DynamicMeshBuildResult(
                     phase=float(phase),
@@ -2854,7 +2539,7 @@ class PriorFreeSpatiotemporalFieldReconstructor(CanonicalPhaseDeformationFieldRe
         scale: float,
     ) -> trimesh.Trimesh:
         resolution = int(self.config.mesh_resolution)
-        axes = [np.linspace(lower[i], upper[i], resolution, dtype=np.float32) for i in range(3)]
+        axes = [np.linspace(lower[index], upper[index], resolution, dtype=np.float32) for index in range(3)]
         xx, yy, zz = np.meshgrid(axes[0], axes[1], axes[2], indexing="ij")
         grid_points = np.column_stack([xx.reshape(-1), yy.reshape(-1), zz.reshape(-1)]).astype(np.float32)
 
@@ -2953,8 +2638,8 @@ class PriorFreeSpatiotemporalFieldReconstructor(CanonicalPhaseDeformationFieldRe
             surface_weights = target_point_weights[surface_idx_t]
             surface_weight_sum = surface_weights.sum().clamp_min(1e-6)
             surface_phase = self._phase_tensor(phase_value, len(surface), self.device)
-
             sdf_surface, grad_surface = field.sdf_and_gradient(surface, surface_phase)
+
             inner_offset = normal_offset
             outer_offset = normal_offset * 2.0
             outer = surface + surface_normals * inner_offset
@@ -3141,8 +2826,6 @@ def reconstruct_dynamic_meshes_from_pointclouds(
         reconstructor = SharedTopologyGlobalBasisResidualReconstructor(resolved_config)
     elif resolved_config.method == "cpd_field_reference_correspondence":
         reconstructor = CPDFieldReferenceCorrespondenceReconstructor(resolved_config)
-    elif resolved_config.method == "shared_topology_decoupled_shape_motion_latent":
-        reconstructor = SharedTopologyDecoupledShapeMotionReconstructor(resolved_config)
     elif resolved_config.method == "shared_topology_decoupled_motion_latent":
         reconstructor = SharedTopologyDecoupledMotionReconstructor(resolved_config)
     elif resolved_config.method == "shared_topology_deformation_field_reference_correspondence":

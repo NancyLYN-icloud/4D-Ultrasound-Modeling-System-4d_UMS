@@ -22,7 +22,7 @@ src/
 │   ├── canonical_field.py             # 标准形状隐式场
 │   ├── deformation_field.py           # 相位条件形变场
 │   ├── dynamic_surface_reconstruction.py # 动态共享重建（当前主线为全局基残差）
-│   ├── metrics.py                     # CD、HD95、时间平滑度等指标
+│   ├── metrics.py                     # CD、HD95、表面 MAE、EMD、Dice 等指标
 │   └── validation.py                  # 传统 4D 指标验证接口（保留）
 ├── pipelines/
 │   └── multicycle_reconstruction.py   # 端到端主流程，统一调度静态/动态模型
@@ -47,7 +47,7 @@ src/
 提供高层实验入口，将周期检测、相位标准化、点云构建、静态/动态模型训练与输出组织成统一工作流。
 
 - **评估层** `metrics` / `validation`
-输出几何精度、时间一致性、水密性与观测质量等结果，用于论文表格、消融实验与可视化分析。
+输出几何精度、体素重叠和观测质量等结果，用于论文表格、消融实验与可视化分析。
 
 ## 2. 当前主模型：动态共享-全局基残差
 

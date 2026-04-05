@@ -538,7 +538,7 @@ def main() -> None:
     parser.add_argument(
         "--materialize-image-noise-pngs",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Whether to write noisy scanner PNG files for ImageNoise in addition to storing frames in scanner_sequence.npz",
     )
     parser.add_argument("--seed", type=int, default=20260331)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import tempfile
 from pathlib import Path
 import sys
 
@@ -30,6 +29,10 @@ from src.gastro4d_gpu_layout import select_grouped_reference_pointclouds
 from src.paths import data_path
 
 
+DEFAULT_SCANNER_FPS = base.DEFAULT_SCANNER_FPS
+DEFAULT_SCANNER_DURATION_SECONDS = base.DEFAULT_SCANNER_DURATION_SECONDS
+
+
 def _latest_phase_model_dir(base_dir: Path) -> Path:
     candidates = sorted(path for path in base_dir.iterdir() if path.is_dir() and path.name.startswith(base.PHASE_MODEL_PREFIX))
     if not candidates:
@@ -37,11 +40,13 @@ def _latest_phase_model_dir(base_dir: Path) -> Path:
     return candidates[-1]
 
 
-def _resolve_monitor_path(explicit_path: Path | None, clean_monitor_path: Path) -> Path:
+def _resolve_monitor_path(explicit_path: Path | None, clean_monitor_path: Path, legacy_monitor_path: Path) -> Path:
     if explicit_path is not None:
         return explicit_path
     if clean_monitor_path.exists():
         return clean_monitor_path
+    if legacy_monitor_path.exists():
+        return legacy_monitor_path
     shared_path = data_path("benchmark", "monitor_stream.npz")
     if shared_path.exists():
         return shared_path
@@ -73,13 +78,17 @@ def _symlink_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _publish_monitor_assets(sim_monitor_path: Path, sim_monitor_image_dir: Path, benchmark_monitor_path: Path, benchmark_monitor_image_dir: Path) -> None:
-    if not sim_monitor_path.exists():
-        raise FileNotFoundError(f"Sim monitor stream not found: {sim_monitor_path}")
-    if not sim_monitor_image_dir.exists():
-        raise FileNotFoundError(f"Sim monitor image dir not found: {sim_monitor_image_dir}")
-    _symlink_or_copy(sim_monitor_path, benchmark_monitor_path)
-    _symlink_or_copy(sim_monitor_image_dir, benchmark_monitor_image_dir)
+def _publish_monitor_assets(source_monitor_path: Path, source_monitor_image_dir: Path | None, benchmark_monitor_path: Path, benchmark_monitor_image_dir: Path) -> None:
+    if not source_monitor_path.exists():
+        raise FileNotFoundError(f"Monitor stream not found: {source_monitor_path}")
+    if source_monitor_path.resolve() != benchmark_monitor_path.resolve() or not benchmark_monitor_path.exists():
+        _symlink_or_copy(source_monitor_path, benchmark_monitor_path)
+    if source_monitor_image_dir is None:
+        return
+    if not source_monitor_image_dir.exists():
+        raise FileNotFoundError(f"Monitor image dir not found: {source_monitor_image_dir}")
+    if source_monitor_image_dir.resolve() != benchmark_monitor_image_dir.resolve() or not benchmark_monitor_image_dir.exists():
+        _symlink_or_copy(source_monitor_image_dir, benchmark_monitor_image_dir)
 
 
 def _resolve_scanner_template_path(explicit_path: Path | None, clean_scanner_path: Path) -> Path:
@@ -124,38 +133,31 @@ def _write_sequence(
     frame_builder,
 ) -> None:
     frame_count = len(timestamps)
+    frames = np.empty((frame_count, base.FRAME_SIZE, base.FRAME_SIZE), dtype=np.uint8)
     positions = np.zeros((frame_count, 3), dtype=np.float64)
     orientations = np.zeros((frame_count, 3, 3), dtype=np.float64)
 
-    scanner_image_dir.mkdir(parents=True, exist_ok=True)
     if rewrite_pngs:
+        scanner_image_dir.mkdir(parents=True, exist_ok=True)
         _clear_scanner_pngs(scanner_image_dir)
 
     scanner_sequence_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="scanner_phase_frames_", dir=str(scanner_sequence_path.parent)) as tmp_dir:
-        frames_path = Path(tmp_dir) / "frames.npy"
-        frames = np.lib.format.open_memmap(
-            frames_path,
-            mode="w+",
-            dtype=np.uint8,
-            shape=(frame_count, base.FRAME_SIZE, base.FRAME_SIZE),
-        )
-        for index, timestamp in enumerate(timestamps):
-            position, orientation, frame_uint8 = frame_builder(index=index, timestamp=float(timestamp), phase_values=phase_values, meshes=meshes)
-            positions[index] = position
-            orientations[index] = orientation
-            frames[index] = frame_uint8
+    for index, timestamp in enumerate(timestamps):
+        position, orientation, frame_uint8 = frame_builder(index=index, timestamp=float(timestamp), phase_values=phase_values, meshes=meshes)
+        positions[index] = position
+        orientations[index] = orientation
+        frames[index] = frame_uint8
 
-            if rewrite_pngs:
-                Image.fromarray(frame_uint8, mode="L").save(scanner_image_dir / f"scanner_{index:04d}.png")
+        if rewrite_pngs:
+            Image.fromarray(frame_uint8, mode="L").save(scanner_image_dir / f"scanner_{index:04d}.png")
 
-        np.savez_compressed(
-            scanner_sequence_path,
-            timestamps=timestamps.astype(np.float64),
-            positions=positions.astype(np.float64),
-            orientations=orientations.astype(np.float64),
-            frames=np.asarray(frames, dtype=np.uint8),
-        )
+    np.savez_compressed(
+        scanner_sequence_path,
+        timestamps=timestamps.astype(np.float64),
+        positions=positions.astype(np.float64),
+        orientations=orientations.astype(np.float64),
+        frames=frames,
+    )
 
 
 def generate_grouped_scanner_sequence(
@@ -237,13 +239,17 @@ def main() -> None:
     parser.add_argument("--scanner-mode", choices=["improved", "standard"], default="improved")
     parser.add_argument("--monitor-path", type=Path, default=None)
     parser.add_argument("--scanner-template-path", type=Path, default=None)
+    parser.add_argument("--use-template-timestamps", action="store_true", help="Reuse timestamps from an existing scanner sequence instead of generating the default 900s/15fps sequence")
     parser.add_argument("--no-png", action="store_true")
-    parser.add_argument("--fps", type=float, default=None)
-    parser.add_argument("--duration-seconds", type=float, default=None)
+    parser.add_argument("--fps", type=float, default=DEFAULT_SCANNER_FPS)
+    parser.add_argument("--duration-seconds", type=float, default=DEFAULT_SCANNER_DURATION_SECONDS)
     args = parser.parse_args()
 
     if (args.fps is None) != (args.duration_seconds is None):
         raise ValueError("--fps and --duration-seconds must be provided together")
+
+    fps = None if args.use_template_timestamps else args.fps
+    duration_seconds = None if args.use_template_timestamps else args.duration_seconds
 
     monitor_path = args.monitor_path.expanduser().resolve() if args.monitor_path else None
     scanner_template_path = args.scanner_template_path.expanduser().resolve() if args.scanner_template_path else None
@@ -259,28 +265,14 @@ def main() -> None:
         if not phase_model_dir.exists():
             raise FileNotFoundError(f"Phase model directory not found: {phase_model_dir}")
 
-        resolved_monitor_path = _resolve_monitor_path(monitor_path, record.sim_monitor_stream)
+        resolved_monitor_path = _resolve_monitor_path(monitor_path, record.monitor_stream, record.legacy_sim_monitor_stream)
+        source_monitor_image_dir = None
+        if monitor_path is None:
+            if record.monitor_image_dir.exists():
+                source_monitor_image_dir = record.monitor_image_dir
+            elif record.legacy_sim_monitor_image_dir.exists():
+                source_monitor_image_dir = record.legacy_sim_monitor_image_dir
         _publish_monitor_assets(
-            sim_monitor_path=resolved_monitor_path,
-            sim_monitor_image_dir=record.sim_monitor_image_dir,
-            benchmark_monitor_path=record.monitor_stream,
-            benchmark_monitor_image_dir=record.monitor_image_dir,
-        )
-        generate_grouped_scanner_sequence(
-            instance_name=record.instance_name,
-            reference_ply=record.reference_ply,
-            phase_model_dir=phase_model_dir,
-            monitor_path=resolved_monitor_path,
-            scanner_template_path=scanner_template_path,
-            scanner_sequence_path=record.scanner_sequence,
-            scanner_image_dir=record.scanner_image_dir,
-            rewrite_pngs=not args.no_png,
-            fps=args.fps,
-            duration_seconds=args.duration_seconds,
-            scanner_mode=args.scanner_mode,
-        )
-        print(f"[ScannerGPU] mode={args.scanner_mode} {record.instance_name} -> {record.scanner_sequence}")
-
-
-if __name__ == "__main__":
-    main()
+            source_monitor_path=resolved_monitor_path,
+            source_monitor_image_dir=source_monitor_image_dir,
+            benchmark_monitor

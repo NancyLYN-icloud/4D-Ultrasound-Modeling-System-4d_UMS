@@ -26,7 +26,7 @@ class GroupedReferencePaths:
         return self.clean_root / "monitor_stream.npz"
 
     @property
-    def sim_monitor_stream(self) -> Path:
+    def legacy_sim_monitor_stream(self) -> Path:
         return self.phase_model_base_dir / "monitor_stream.npz"
 
     @property
@@ -38,12 +38,24 @@ class GroupedReferencePaths:
         return self.clean_root / "image" / "monitor"
 
     @property
-    def sim_monitor_image_dir(self) -> Path:
+    def legacy_sim_monitor_image_dir(self) -> Path:
         return self.phase_model_base_dir / "image" / "monitor"
 
     @property
     def scanner_image_dir(self) -> Path:
         return self.clean_root / "image" / "scanner"
+
+    @property
+    def resolved_phase_monitor_stream(self) -> Path:
+        if self.monitor_stream.exists():
+            return self.monitor_stream
+        return self.legacy_sim_monitor_stream
+
+    @property
+    def resolved_phase_monitor_image_dir(self) -> Path:
+        if self.monitor_image_dir.exists():
+            return self.monitor_image_dir
+        return self.legacy_sim_monitor_image_dir
 
 
 def infer_split(group_name: str) -> str:

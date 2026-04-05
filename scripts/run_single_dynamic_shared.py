@@ -25,9 +25,19 @@ from scripts.run_experiments import (
     _run_pipeline,
     _write_json,
 )
+from scripts.experiment_method_registry import get_method_spec, get_runnable_method_display_names
 from src.config import PointCloudPhaseSummary
 from src.modeling.dynamic_surface_reconstruction import reconstruct_dynamic_meshes_from_pointclouds
 from src.stomach_instance_paths import resolve_gt_mesh_input_path, resolve_instance_paths
+
+
+def _should_resolve_legacy_instance_defaults(args: argparse.Namespace) -> bool:
+    return (
+        args.instance_name is not None
+        and args.monitor_path == DEFAULT_MONITOR_PATH
+        and args.scanner_path == DEFAULT_SCANNER_PATH
+        and args.gt_mesh_path == DEFAULT_GT_MESH_PATH
+    )
 
 
 def _load_phase_cache(pointcloud_root: Path) -> tuple[list[Path], dict[Path, PointCloudPhaseSummary], dict[Path, float]]:
@@ -109,20 +119,11 @@ def _apply_quick_profile(args: argparse.Namespace, config: object) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run only the tuned dynamic shared-topology method")
+    parser = argparse.ArgumentParser(description="Run a single registered benchmark method and export academic naming metadata")
     parser.add_argument("--mode", choices=["fast-dev", "dynamic-detail", "full-paper"], default="dynamic-detail")
     parser.add_argument(
         "--method",
-        choices=[
-            "动态共享",
-            "动态共享-全局基残差",
-            "动态共享-参考对应正则",
-            "动态共享-连续形变场",
-            "动态共享-解耦运动潜码",
-            "动态共享-解耦形状运动潜码",
-            "动态共享-CPD对应点",
-            "动态共享-无先验4D场",
-        ],
+        choices=get_runnable_method_display_names(),
         default="动态共享-全局基残差",
     )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_EXPERIMENT_ROOT)
@@ -201,15 +202,13 @@ def main() -> None:
     parser.add_argument("--motion-mean-weight", type=float, default=None)
     parser.add_argument("--motion-lipschitz-weight", type=float, default=None)
     args = parser.parse_args()
+    method_spec = get_method_spec(args.method)
 
-    if args.instance_name is not None:
+    if _should_resolve_legacy_instance_defaults(args):
         instance_paths = resolve_instance_paths(instance_name=args.instance_name)
-        if args.monitor_path == DEFAULT_MONITOR_PATH:
-            args.monitor_path = instance_paths.monitor_stream
-        if args.scanner_path == DEFAULT_SCANNER_PATH:
-            args.scanner_path = instance_paths.scanner_sequence
-        if args.gt_mesh_path == DEFAULT_GT_MESH_PATH:
-            args.gt_mesh_path = resolve_gt_mesh_input_path(instance_paths)
+        args.monitor_path = instance_paths.monitor_stream
+        args.scanner_path = instance_paths.scanner_sequence
+        args.gt_mesh_path = resolve_gt_mesh_input_path(instance_paths)
 
     run_dir = _make_run_dir(args.out_dir, args.mode, "single-dynamic-shared", args.run_name)
     artifact_dir = run_dir / "artifacts"
@@ -302,6 +301,7 @@ def main() -> None:
     _apply_quick_profile(args, config.dynamic_model)
 
     _write_json(config_dir / f"{args.method}.json", asdict(config))
+    _write_json(run_dir / "method_metadata.json", method_spec.to_metadata())
 
     gt_mesh = _load_gt_mesh(args.gt_mesh_path)
     if args.pointcloud_root is None:
@@ -312,6 +312,8 @@ def main() -> None:
             scanner_path=args.scanner_path,
         )
     else:
+        if method_spec.execution_family != "dynamic":
+            raise ValueError("Pointcloud replay cache is currently only supported for dynamic registered methods")
         replay_root = _prepare_replay_pointcloud_root(args.pointcloud_root, artifact_dir / "replay_pointclouds")
         pointclouds, phase_summaries, phase_confidences = _load_phase_cache(replay_root)
         if not pointclouds:
@@ -332,6 +334,12 @@ def main() -> None:
 
         output = _ReplayOutput()
     result = _evaluate_output(args.method, output, gt_mesh)
+    result["method_slug"] = method_spec.slug
+    result["method_academic_name"] = method_spec.academic_name
+    result["method_paradigm"] = method_spec.paradigm
+    result["method_paper_role"] = method_spec.paper_role
+    result["method_implementation"] = method_spec.implementation_method
+    result["method_execution_family"] = method_spec.execution_family
     result["quick_profile"] = args.quick_profile
     result["reused_pointcloud_cache"] = bool(args.pointcloud_root is not None)
     result_path = run_dir / "dynamic_shared_result.json"

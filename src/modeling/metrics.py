@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import trimesh
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
 
@@ -89,27 +90,82 @@ def compute_hausdorff_distance(
     return float(np.percentile(dist_pred_to_gt, percentile))
 
 
-def compute_temporal_smoothness(
-    meshes: list[trimesh.Trimesh], num_samples: int = 5000, random_seed: int = 7
+def compute_surface_mae(
+    mesh_pred: trimesh.Trimesh,
+    mesh_gt: trimesh.Trimesh | trimesh.points.PointCloud,
+    num_samples: int = 10000,
+    random_seed: int = 7,
 ) -> float:
-    """计算时序网格序列的顶点位移平均速度（用于衡量抖动）。
-    注意：这假设网格在拓扑上不一致，因此采用最近点距离近似光流。
-    """
-    if len(meshes) < 2:
-        return 0.0
-    
-    velocities = []
-    for i in range(len(meshes) - 1):
-        m0 = meshes[i]
-        m1 = meshes[i+1]
+    """计算对称平均表面绝对误差。"""
+    pred_points = _sample_geometry_points(mesh_pred, num_samples, random_seed=random_seed)
+    gt_points = _sample_geometry_points(mesh_gt, num_samples, random_seed=random_seed + 1)
+    if len(pred_points) == 0 or len(gt_points) == 0:
+        return float("nan")
 
-        p0 = _sample_geometry_points(m0, num_samples, random_seed=random_seed + i * 2)
-        p1 = _sample_geometry_points(m1, num_samples, random_seed=random_seed + i * 2 + 1)
-        if len(p0) == 0 or len(p1) == 0:
-            continue
-        tree = cKDTree(p1)
-        
-        dists, _ = tree.query(p0, k=1)
-        velocities.append(np.mean(dists))
+    gt_tree = cKDTree(gt_points)
+    dist_pred_to_gt, _ = gt_tree.query(pred_points, k=1)
+    pred_tree = cKDTree(pred_points)
+    dist_gt_to_pred, _ = pred_tree.query(gt_points, k=1)
+    return float(0.5 * (np.mean(dist_pred_to_gt) + np.mean(dist_gt_to_pred)))
 
-    return float(np.mean(velocities)) if velocities else float("nan")
+
+def compute_earth_movers_distance(
+    mesh_pred: trimesh.Trimesh,
+    mesh_gt: trimesh.Trimesh | trimesh.points.PointCloud,
+    num_samples: int = 256,
+    random_seed: int = 7,
+) -> float:
+    """计算基于离散最优匹配的近似 EMD。"""
+    pred_points = _sample_geometry_points(mesh_pred, num_samples, random_seed=random_seed)
+    gt_points = _sample_geometry_points(mesh_gt, num_samples, random_seed=random_seed + 1)
+    if len(pred_points) == 0 or len(gt_points) == 0:
+        return float("nan")
+
+    sample_count = min(len(pred_points), len(gt_points), int(num_samples))
+    pred_points = pred_points[:sample_count]
+    gt_points = gt_points[:sample_count]
+    pairwise_distances = np.linalg.norm(pred_points[:, None, :] - gt_points[None, :, :], axis=2)
+    row_ind, col_ind = linear_sum_assignment(pairwise_distances)
+    return float(np.mean(pairwise_distances[row_ind, col_ind]))
+
+
+def _quantized_voxel_indices(points: np.ndarray, pitch: float, origin: np.ndarray) -> set[tuple[int, int, int]]:
+    if len(points) == 0:
+        return set()
+    indices = np.floor((points - origin[None, :]) / float(pitch) + 1e-6).astype(np.int64)
+    return {tuple(index.tolist()) for index in indices}
+
+
+def _geometry_voxel_points(
+    geometry: trimesh.Trimesh | trimesh.points.PointCloud,
+    pitch: float,
+    random_seed: int,
+) -> np.ndarray:
+    if isinstance(geometry, trimesh.Trimesh) and len(geometry.faces) > 0:
+        try:
+            voxel_grid = geometry.voxelized(pitch).fill()
+        except Exception:
+            voxel_grid = geometry.voxelized(pitch)
+        points = np.asarray(voxel_grid.points, dtype=np.float64)
+        if len(points) > 0:
+            return points
+    return _sample_geometry_points(geometry, num_samples=12000, random_seed=random_seed)
+
+
+def compute_dice_score(
+    mesh_pred: trimesh.Trimesh,
+    mesh_gt: trimesh.Trimesh | trimesh.points.PointCloud,
+    voxel_pitch: float = 2.0,
+    random_seed: int = 7,
+) -> float:
+    """计算共享体素网格上的 Dice 系数。"""
+    pred_points = _geometry_voxel_points(mesh_pred, pitch=voxel_pitch, random_seed=random_seed)
+    gt_points = _geometry_voxel_points(mesh_gt, pitch=voxel_pitch, random_seed=random_seed + 1)
+    if len(pred_points) == 0 or len(gt_points) == 0:
+        return float("nan")
+
+    origin = np.minimum(pred_points.min(axis=0), gt_points.min(axis=0)) - float(voxel_pitch)
+    pred_voxels = _quantized_voxel_indices(pred_points, voxel_pitch, origin)
+    gt_voxels = _quantized_voxel_indices(gt_points, voxel_pitch, origin)
+    overlap = len(pred_voxels & gt_voxels)
+    return float(2.0 * overlap / max(len(pred_voxels) + len(gt_voxels), 1))

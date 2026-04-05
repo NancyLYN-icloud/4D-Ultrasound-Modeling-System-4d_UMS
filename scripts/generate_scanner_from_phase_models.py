@@ -4,7 +4,6 @@ import argparse
 import csv
 from pathlib import Path
 import sys
-import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -31,6 +30,8 @@ PHASE_MODEL_PREFIX = "phase_sequence_models_run_"
 PHASE_MODEL_BASE_DIR = data_path("simuilate_data")
 FRAME_SIZE = 512
 PIXEL_SPACING_MM = regen.PIXEL_SPACING_MM
+DEFAULT_SCANNER_FPS = 15.0
+DEFAULT_SCANNER_DURATION_SECONDS = 900.0
 
 
 def _latest_phase_model_dir(base_dir: Path) -> Path:
@@ -205,61 +206,45 @@ def generate_from_phase_models(
     observation_transform = _load_observation_transform(phase_model_dir)
 
     frame_count = len(timestamps)
+    frames = np.empty((frame_count, FRAME_SIZE, FRAME_SIZE), dtype=np.uint8)
     positions = np.zeros((frame_count, 3), dtype=np.float64)
     orientations = np.zeros((frame_count, 3, 3), dtype=np.float64)
 
-    instance_paths.scanner_image_dir.mkdir(parents=True, exist_ok=True)
     if rewrite_pngs:
+        instance_paths.scanner_image_dir.mkdir(parents=True, exist_ok=True)
         _clear_scanner_pngs(instance_paths.scanner_image_dir)
 
-    tmp_root = instance_paths.scanner_sequence.parent
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="scanner_phase_frames_", dir=str(tmp_root)) as tmp_dir:
-        frames_path = Path(tmp_dir) / "frames.npy"
-        frames = np.lib.format.open_memmap(
-            frames_path,
-            mode="w+",
-            dtype=np.uint8,
-            shape=(frame_count, FRAME_SIZE, FRAME_SIZE),
-        )
-
-        for index, timestamp in enumerate(timestamps):
-            phase = float((timestamp % gastric_period) / gastric_period)
-            phase_index = _nearest_phase_index(phase_values, phase)
-            sweep_position = regen.sweep_coordinate(float(timestamp), gastric_period)
-            position = regen.world_centerline(reference_model, sweep_position, phase)
-            orientation = regen.probe_orientation(reference_model, sweep_position, phase, float(timestamp))
-            position, orientation = _apply_pose_transform(position, orientation, observation_transform)
-
-            frame_float = _slice_mesh_frame(meshes[phase_index], position, orientation, float(timestamp), phase)
-            frame_uint8 = (np.clip(frame_float, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-            positions[index] = position
-            orientations[index] = orientation
-            frames[index] = frame_uint8
-
-            if rewrite_pngs:
-                Image.fromarray(frame_uint8, mode="L").save(instance_paths.scanner_image_dir / f"scanner_{index:04d}.png")
-            if index < 5 or index % 1000 == 0 or index == frame_count - 1:
-                print(
-                    f"[ScannerFromPhaseModels] frame={index:05d}/{frame_count - 1} "
-                    f"ts={timestamp:.3f}s phase={phase:.3f} mesh_phase={phase_values[phase_index]:.3f}"
-                )
-
-        frames.flush()
-        tmp_path = instance_paths.scanner_sequence.with_name(instance_paths.scanner_sequence.stem + ".tmp.npz")
-        np.savez_compressed(
-            tmp_path,
-            frames=frames,
-            timestamps=timestamps.astype(np.float64),
-            positions=positions.astype(np.float64),
-            orientations=orientations.astype(np.float64),
-        )
-
-    tmp_final = tmp_path if tmp_path.suffix == ".npz" else tmp_path.with_suffix(".npz")
-    final_tmp = tmp_final if tmp_final.exists() else tmp_path
     instance_paths.scanner_sequence.parent.mkdir(parents=True, exist_ok=True)
-    final_tmp.replace(instance_paths.scanner_sequence)
+    for index, timestamp in enumerate(timestamps):
+        phase = float((timestamp % gastric_period) / gastric_period)
+        phase_index = _nearest_phase_index(phase_values, phase)
+        sweep_position = regen.sweep_coordinate(float(timestamp), gastric_period)
+        position = regen.world_centerline(reference_model, sweep_position, phase)
+        orientation = regen.probe_orientation(reference_model, sweep_position, phase, float(timestamp))
+        position, orientation = _apply_pose_transform(position, orientation, observation_transform)
+
+        frame_float = _slice_mesh_frame(meshes[phase_index], position, orientation, float(timestamp), phase)
+        frame_uint8 = (np.clip(frame_float, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        positions[index] = position
+        orientations[index] = orientation
+        frames[index] = frame_uint8
+
+        if rewrite_pngs:
+            Image.fromarray(frame_uint8, mode="L").save(instance_paths.scanner_image_dir / f"scanner_{index:04d}.png")
+        if index < 5 or index % 1000 == 0 or index == frame_count - 1:
+            print(
+                f"[ScannerFromPhaseModels] frame={index:05d}/{frame_count - 1} "
+                f"ts={timestamp:.3f}s phase={phase:.3f} mesh_phase={phase_values[phase_index]:.3f}"
+            )
+
+    np.savez_compressed(
+        instance_paths.scanner_sequence,
+        frames=frames,
+        timestamps=timestamps.astype(np.float64),
+        positions=positions.astype(np.float64),
+        orientations=orientations.astype(np.float64),
+    )
 
     print(f"[ScannerFromPhaseModels] Instance: {instance_paths.name}")
     print(f"[ScannerFromPhaseModels] Reference: {instance_paths.reference_ply}")
@@ -280,15 +265,21 @@ def main() -> None:
     parser.add_argument("--reference-ply", type=str, default=None, help="Explicit reference stomach point cloud path")
     parser.add_argument("--phase-model-dir", type=str, default="", help="Specific phase_sequence_models_run directory to use")
     parser.add_argument("--no-png", action="store_true", help="Do not rewrite scanner PNG images")
-    parser.add_argument("--fps", type=float, default=None, help="Output scanner frame rate in Hz")
-    parser.add_argument("--duration-seconds", type=float, default=None, help="Output scanner duration in seconds")
+    parser.add_argument("--fps", type=float, default=DEFAULT_SCANNER_FPS, help="Output scanner frame rate in Hz")
+    parser.add_argument("--duration-seconds", type=float, default=DEFAULT_SCANNER_DURATION_SECONDS, help="Output scanner duration in seconds")
     parser.add_argument("--monitor-path", type=str, default=None, help="Optional explicit monitor_stream.npz path")
     parser.add_argument("--scanner-template-path", type=str, default=None, help="Optional scanner_sequence.npz whose timestamps will be reused")
+    parser.add_argument("--use-template-timestamps", action="store_true", help="Reuse timestamps from an existing scanner sequence instead of generating the default 900s/15fps sequence")
     parser.add_argument("--batch-all-references", action="store_true", help="Regenerate scanner sequences for all point clouds under stomach_pcd")
     args = parser.parse_args()
 
     if (args.fps is None) != (args.duration_seconds is None):
         raise ValueError("--fps and --duration-seconds must be provided together")
+    if args.use_template_timestamps and args.scanner_template_path is None and not args.batch_all_references and args.instance_name is None and args.reference_ply is None:
+        raise ValueError("--use-template-timestamps requires an existing instance target or an explicit --scanner-template-path")
+
+    fps = None if args.use_template_timestamps else args.fps
+    duration_seconds = None if args.use_template_timestamps else args.duration_seconds
 
     monitor_path = Path(args.monitor_path).expanduser().resolve() if args.monitor_path else None
     scanner_template_path = Path(args.scanner_template_path).expanduser().resolve() if args.scanner_template_path else None
@@ -307,8 +298,8 @@ def main() -> None:
                 reference_ply=reference_path,
                 phase_model_dir=phase_model_dir,
                 rewrite_pngs=not args.no_png,
-                fps=args.fps,
-                duration_seconds=args.duration_seconds,
+                fps=fps,
+                duration_seconds=duration_seconds,
                 monitor_path=monitor_path,
                 scanner_template_path=scanner_template_path,
             )
@@ -326,8 +317,8 @@ def main() -> None:
         reference_ply=instance_paths.reference_ply,
         phase_model_dir=phase_model_dir,
         rewrite_pngs=not args.no_png,
-        fps=args.fps,
-        duration_seconds=args.duration_seconds,
+        fps=fps,
+        duration_seconds=duration_seconds,
         monitor_path=monitor_path,
         scanner_template_path=scanner_template_path,
     )

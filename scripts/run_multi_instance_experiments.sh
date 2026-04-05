@@ -8,7 +8,6 @@ OUT_DIR="${OUT_DIR:-/home/liuyanan/data/Research_Data/4D-UMS/experiments}"
 MODE="${MODE:-dynamic-detail}"
 EXPERIMENT_SET="${EXPERIMENT_SET:-both}"
 RUN_NAME_PREFIX="${RUN_NAME_PREFIX:-multi-instance}"
-INCLUDE_PRIOR_FREE="${INCLUDE_PRIOR_FREE:-0}"
 INSTANCES=()
 
 usage() {
@@ -23,7 +22,6 @@ Environment overrides:
   MODE                fast-dev | dynamic-detail | full-paper
   EXPERIMENT_SET      method-comparison | cpd-ablation | both
   RUN_NAME_PREFIX     Prefix used in per-instance run names
-  INCLUDE_PRIOR_FREE  Set to 1 to include the prior-free branch
 EOF
 }
 
@@ -54,9 +52,6 @@ while IFS= read -r instance_name; do
         --experiment-set "$EXPERIMENT_SET"
         --run-name "${RUN_NAME_PREFIX}-${instance_name}"
     )
-    if [[ "$INCLUDE_PRIOR_FREE" == "1" ]]; then
-        cmd+=(--include-prior-free)
-    fi
     echo "[MultiInstanceExp] Running $instance_name"
     "${cmd[@]}"
 done < <(resolve_instances)

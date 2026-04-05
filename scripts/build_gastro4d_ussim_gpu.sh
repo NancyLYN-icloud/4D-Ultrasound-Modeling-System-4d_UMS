@@ -14,7 +14,10 @@ UMS_DATA_ROOT="${UMS_DATA_ROOT:-$SOURCE_DATA_ROOT/$DATASET_NAME}"
 SOURCE_GROUPS="${SOURCE_GROUPS:-stomachPCD_dev stomachPCD_01 stomachPCD_02}"
 CONDITIONS="${CONDITIONS:-Sparse PoseNoise ImageNoise}"
 USE_IMPROVED_SCANNER="${USE_IMPROVED_SCANNER:-0}"
-WRITE_PNGS="${WRITE_PNGS:-0}"
+WRITE_PNGS="${WRITE_PNGS:-1}"
+MATERIALIZE_IMAGE_NOISE_PNGS="${MATERIALIZE_IMAGE_NOISE_PNGS:-$WRITE_PNGS}"
+SCANNER_FPS="${SCANNER_FPS:-15}"
+SCANNER_DURATION_SECONDS="${SCANNER_DURATION_SECONDS:-900}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "Python launcher not found: $PYTHON_BIN" >&2
@@ -46,9 +49,16 @@ export UMS_DATA_ROOT
 "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_phase_sequence_models.py" --batch-all-references
 
 if [[ "$WRITE_PNGS" == "1" ]]; then
-    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models.py" --batch-all-references
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models.py" \
+        --batch-all-references \
+        --fps "$SCANNER_FPS" \
+        --duration-seconds "$SCANNER_DURATION_SECONDS"
 else
-    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models.py" --batch-all-references --no-png
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/generate_scanner_from_phase_models.py" \
+        --batch-all-references \
+        --fps "$SCANNER_FPS" \
+        --duration-seconds "$SCANNER_DURATION_SECONDS" \
+        --no-png
 fi
 
 if [[ "$USE_IMPROVED_SCANNER" == "1" ]]; then
@@ -68,6 +78,7 @@ fi
     --source-manifest "$UMS_DATA_ROOT/benchmark/manifests/benchmark_manifest.csv" \
     --condition-manifest "$UMS_DATA_ROOT/benchmark/manifests/benchmark_condition_manifest.csv" \
     --condition-root "$UMS_DATA_ROOT/benchmark/conditions" \
+    "--materialize-image-noise-pngs=$MATERIALIZE_IMAGE_NOISE_PNGS" \
     --overwrite
 
 echo "[Gastro4D-USSim GPU] completed dataset build under $UMS_DATA_ROOT"

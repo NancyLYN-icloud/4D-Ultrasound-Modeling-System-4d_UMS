@@ -8,11 +8,12 @@ from pathlib import Path
 LOWER_IS_BETTER = {
     "平均CD(mm^2)": True,
     "平均HD95(mm)": True,
-    "时间平滑度(mm/step)": True,
+    "平均表面MAE(mm)": True,
+    "平均EMD(mm)": True,
 }
 
 HIGHER_IS_BETTER = {
-    "水密比例": True,
+    "平均Dice": True,
 }
 
 
@@ -54,34 +55,37 @@ def _write_markdown(path: Path, rows: list[dict[str, str]]) -> None:
         "方法",
         "平均CD(mm^2)",
         "平均HD95(mm)",
-        "时间平滑度(mm/step)",
-        "水密比例",
+        "平均表面MAE(mm)",
+        "平均EMD(mm)",
+        "平均Dice",
         "run_name",
     ]
 
     lines = [
         "# Main Table Summary",
         "",
-        "| 方法 | CD↓ | HD95↓ | 时间平滑度↓ | 水密比例↑ | run_name |",
-        "| --- | ---: | ---: | ---: | ---: | --- |",
+        "| 方法 | CD↓ | HD95↓ | MAE↓ | EMD↓ | Dice↑ | run_name |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
 
     for row in rows:
         lines.append(
-            "| {method} | {cd} | {hd95} | {smooth} | {watertight} | {run_name} |".format(
+            "| {method} | {cd} | {hd95} | {mae} | {emd} | {dice} | {run_name} |".format(
                 method=row["方法"],
                 cd=_format_float(row["平均CD(mm^2)"], 4),
                 hd95=_format_float(row["平均HD95(mm)"], 4),
-                smooth=_format_float(row["时间平滑度(mm/step)"], 4),
-                watertight=_format_float(row["水密比例"], 4),
+                mae=_format_float(row["平均表面MAE(mm)"], 4),
+                emd=_format_float(row["平均EMD(mm)"], 4),
+                dice=_format_float(row["平均Dice"], 4),
                 run_name=row["run_name"],
             )
         )
 
     best_cd = min(rows, key=lambda item: float(item["平均CD(mm^2)"]))
     best_hd95 = min(rows, key=lambda item: float(item["平均HD95(mm)"]))
-    best_smooth = min(rows, key=lambda item: float(item["时间平滑度(mm/step)"]))
-    best_watertight = max(rows, key=lambda item: float(item["水密比例"]))
+    best_mae = min(rows, key=lambda item: float(item["平均表面MAE(mm)"]))
+    best_emd = min(rows, key=lambda item: float(item["平均EMD(mm)"]))
+    best_dice = max(rows, key=lambda item: float(item["平均Dice"]))
 
     lines.extend(
         [
@@ -90,8 +94,9 @@ def _write_markdown(path: Path, rows: list[dict[str, str]]) -> None:
             "",
             f"- Best CD: {best_cd['方法']} ({_format_float(best_cd['平均CD(mm^2)'], 4)})",
             f"- Best HD95: {best_hd95['方法']} ({_format_float(best_hd95['平均HD95(mm)'], 4)})",
-            f"- Best Temporal Smoothness: {best_smooth['方法']} ({_format_float(best_smooth['时间平滑度(mm/step)'], 4)})",
-            f"- Best Watertight Ratio: {best_watertight['方法']} ({_format_float(best_watertight['水密比例'], 4)})",
+            f"- Best Surface MAE: {best_mae['方法']} ({_format_float(best_mae['平均表面MAE(mm)'], 4)})",
+            f"- Best EMD: {best_emd['方法']} ({_format_float(best_emd['平均EMD(mm)'], 4)})",
+            f"- Best Dice: {best_dice['方法']} ({_format_float(best_dice['平均Dice'], 4)})",
         ]
     )
 
@@ -117,7 +122,7 @@ def main() -> None:
     for metric in HIGHER_IS_BETTER:
         _rank(rows, metric, descending=True)
 
-    rows.sort(key=lambda item: (float(item["平均CD(mm^2)"]), float(item["平均HD95(mm)"])))
+    rows.sort(key=lambda item: (float(item["平均CD(mm^2)"]), float(item["平均HD95(mm)"]), float(item["平均表面MAE(mm)"]), float(item["平均EMD(mm)"]), -float(item["平均Dice"])))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = args.output_dir / f"{args.output_prefix}.csv"

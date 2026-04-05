@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -43,6 +45,22 @@ class BenchmarkInstanceGpuRow:
     @property
     def clean_scanner_image_dir(self) -> Path:
         return self.clean_root / "image" / "scanner"
+
+
+def _has_scanner_pngs(row: BenchmarkInstanceGpuRow) -> bool:
+    return row.clean_scanner_image_dir.exists() and base._count_scanner_frames(row.clean_scanner_image_dir) > 0
+
+
+def _load_scanner_frames(path: Path) -> np.ndarray:
+    with np.load(path) as data:
+        return data["frames"].astype(np.uint8)
+
+
+def _build_frames_from_row(row: BenchmarkInstanceGpuRow, indices: np.ndarray) -> np.ndarray:
+    if _has_scanner_pngs(row):
+        return base._build_frames_array(row.clean_scanner_image_dir, indices)
+    frames = _load_scanner_frames(row.scanner_sequence)
+    return np.asarray(frames[indices], dtype=np.uint8)
 
 
 def _condition_slug(condition: str) -> str:
@@ -92,7 +110,7 @@ def _build_sparse_condition(
     else:
         offset = 0
     indices = base._sparse_indices(frame_count, sparse_step, offset)
-    frames = base._build_frames_array(row.clean_scanner_image_dir, indices)
+    frames = _build_frames_from_row(row, indices)
 
     sparse_scanner = target_root / "scanner_sequence.npz"
     base._write_npz(
@@ -107,11 +125,12 @@ def _build_sparse_condition(
 
     sparse_image_dir = target_root / "image" / "scanner"
     base._remove_path(sparse_image_dir)
-    sparse_image_dir.mkdir(parents=True, exist_ok=True)
-    for new_idx, src_idx in enumerate(indices):
-        src = row.clean_scanner_image_dir / f"scanner_{int(src_idx):04d}.png"
-        dst = sparse_image_dir / f"scanner_{new_idx:04d}.png"
-        base._symlink_or_copy(src, dst)
+    if _has_scanner_pngs(row):
+        sparse_image_dir.mkdir(parents=True, exist_ok=True)
+        for new_idx, src_idx in enumerate(indices):
+            src = row.clean_scanner_image_dir / f"scanner_{int(src_idx):04d}.png"
+            dst = sparse_image_dir / f"scanner_{new_idx:04d}.png"
+            base._symlink_or_copy(src, dst)
 
     metadata_path = target_root / "condition_metadata.json"
     base._write_metadata(
@@ -126,6 +145,7 @@ def _build_sparse_condition(
             "sparse_offset": int(offset),
             "selected_frame_count": int(indices.size),
             "selected_frame_ratio": float(indices.size / frame_count),
+            "scanner_pngs_materialized": bool(_has_scanner_pngs(row)),
         },
     )
 
@@ -167,7 +187,7 @@ def _build_pose_noise_condition(
     noisy_orientations = np.einsum("nij,njk->nik", delta_rotation, orientations)
 
     noisy_scanner = target_root / "scanner_sequence.npz"
-    frames = base._build_frames_array(row.clean_scanner_image_dir, np.arange(len(timestamps), dtype=np.int64))
+    frames = _build_frames_from_row(row, np.arange(len(timestamps), dtype=np.int64))
     base._write_npz(
         noisy_scanner,
         frames=frames,
@@ -177,7 +197,8 @@ def _build_pose_noise_condition(
     )
     base._symlink_or_copy(row.monitor_stream, target_root / "monitor_stream.npz")
     base._symlink_or_copy(row.clean_monitor_image_dir, target_root / "image" / "monitor")
-    base._symlink_or_copy(row.clean_scanner_image_dir, target_root / "image" / "scanner")
+    if _has_scanner_pngs(row):
+        base._symlink_or_copy(row.clean_scanner_image_dir, target_root / "image" / "scanner")
 
     metadata_path = target_root / "condition_metadata.json"
     base._write_metadata(
@@ -195,6 +216,7 @@ def _build_pose_noise_condition(
             "definition": "Pose metadata perturbation only: scanner image frames and monitor stream are unchanged.",
             "image_frames_changed": False,
             "monitor_stream_changed": False,
+            "scanner_pngs_materialized": bool(_has_scanner_pngs(row)),
         },
     )
 
@@ -232,7 +254,8 @@ def _build_image_noise_condition(
 
     timestamps, positions, orientations = base._load_scanner_metadata(row.scanner_sequence)
     frame_count = len(timestamps)
-    first_frame = base._read_scanner_frame(row.clean_scanner_image_dir, 0)
+    source_frames = _load_scanner_frames(row.scanner_sequence)
+    first_frame = np.asarray(source_frames[0], dtype=np.uint8)
     rng = np.random.default_rng(seed + 10007 + sum(ord(ch) for ch in row.instance_name))
     bias_noise = base._smooth_noise(rng, frame_count, 1, image_bias_std, noise_sigma_frames)[:, 0]
     gain_noise = 1.0 + base._smooth_noise(rng, frame_count, 1, image_gain_std, noise_sigma_frames)[:, 0]
@@ -247,7 +270,7 @@ def _build_image_noise_condition(
 
     try:
         for frame_index in range(frame_count):
-            frame = base._read_scanner_frame(row.clean_scanner_image_dir, frame_index).astype(np.float32)
+            frame = np.asarray(source_frames[frame_index], dtype=np.float32)
             frame += rng.normal(0.0, image_noise_std, size=frame.shape).astype(np.float32)
             frame = frame * np.float32(gain_noise[frame_index]) + np.float32(bias_noise[frame_index])
             if image_blur_sigma > 0.0:
@@ -261,7 +284,7 @@ def _build_image_noise_condition(
         noisy_scanner = target_root / "scanner_sequence.npz"
         base._write_npz(
             noisy_scanner,
-            compressed=False,
+            compressed=True,
             frames=noisy_frames,
             timestamps=timestamps.astype(np.float64),
             positions=positions.astype(np.float64),
@@ -369,7 +392,7 @@ def main() -> None:
     parser.add_argument("--image-bias-std", type=float, default=4.0)
     parser.add_argument("--image-gain-std", type=float, default=0.04)
     parser.add_argument("--image-blur-sigma", type=float, default=0.6)
-    parser.add_argument("--materialize-image-noise-pngs", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--materialize-image-noise-pngs", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=20260331)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -390,10 +413,6 @@ def main() -> None:
             raise FileNotFoundError(f"Missing monitor stream: {row.monitor_stream}")
         if not row.scanner_sequence.exists():
             raise FileNotFoundError(f"Missing scanner sequence: {row.scanner_sequence}")
-        if not row.clean_scanner_image_dir.exists():
-            raise FileNotFoundError(f"Missing scanner image dir: {row.clean_scanner_image_dir}")
-        if base._count_scanner_frames(row.clean_scanner_image_dir) == 0:
-            raise FileNotFoundError(f"No scanner PNGs found under {row.clean_scanner_image_dir}")
 
     manifest_rows = [_clean_manifest_row(row) for row in source_rows]
     for row in filtered_rows:

@@ -14,7 +14,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python}"
 OUT_DIR="${OUT_DIR:-}"
-INCLUDE_PRIOR_FREE="${INCLUDE_PRIOR_FREE:-0}"
 
 if [[ ! -d "$POINTCLOUD_ROOT" ]]; then
     echo "Pointcloud root not found: $POINTCLOUD_ROOT" >&2
@@ -27,10 +26,6 @@ METHODS=(
     "动态共享-解耦运动潜码::decoupled-motion-main-table"
     "动态共享-全局基残差::global-basis-residual-main-table"
 )
-
-if [[ "$INCLUDE_PRIOR_FREE" == "1" ]]; then
-    METHODS+=("动态共享-无先验4D场::prior-free-main-table")
-fi
 
 for item in "${METHODS[@]}"; do
     method="${item%%::*}"

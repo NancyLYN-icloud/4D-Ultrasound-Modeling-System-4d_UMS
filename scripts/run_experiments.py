@@ -26,7 +26,13 @@ if str(ROOT) not in sys.path:
 from src.config import PipelineConfig
 from src.data_acquisition.free_arm_scan import FreeArmScanner
 from src.data_acquisition.monitor import UltrasoundMonitor
-from src.modeling.metrics import compute_chamfer_distance, compute_hausdorff_distance, compute_temporal_smoothness
+from src.modeling.metrics import (
+    compute_chamfer_distance,
+    compute_dice_score,
+    compute_earth_movers_distance,
+    compute_hausdorff_distance,
+    compute_surface_mae,
+)
 from src.paths import data_path
 from src.pipelines.multicycle_reconstruction import MulticycleReconstructionPipeline, PipelineOutput
 from src.stomach_instance_paths import resolve_gt_mesh_input_path, resolve_instance_paths
@@ -299,22 +305,6 @@ def _build_config(
     elif method == "静态增强":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = False
-    elif method == "动态共享":
-        config.phase_canonicalization.enabled = True
-        config.dynamic_model.enabled = True
-        config.dynamic_model.method = "shared_topology_vertex_field"
-        if dynamic_train_steps is None and mode == "dynamic-detail":
-            config.dynamic_model.train_steps = 6000
-        config.dynamic_model.bootstrap_offset_weight = 0.18
-        config.dynamic_model.bootstrap_decay_fraction = 0.45
-        config.dynamic_model.unsupported_anchor_weight = 0.0
-        config.dynamic_model.unsupported_laplacian_weight = 0.10
-        config.dynamic_model.correspondence_temporal_weight = 0.01
-        config.dynamic_model.correspondence_acceleration_weight = 0.005
-        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
-        config.dynamic_model.correspondence_start_fraction = 0.4
-        config.dynamic_model.correspondence_ramp_fraction = 0.2
-        config.dynamic_model.smoothing_iterations = 20
     elif method == "动态共享-全局基残差":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
@@ -366,32 +356,24 @@ def _build_config(
         config.dynamic_model.correspondence_phase_consistency_weight = 0.005
         config.dynamic_model.correspondence_start_fraction = 0.4
         config.dynamic_model.correspondence_ramp_fraction = 0.2
-    elif method == "动态共享-解耦形状运动潜码":
-        config.phase_canonicalization.enabled = True
-        config.dynamic_model.enabled = True
-        config.dynamic_model.method = "shared_topology_decoupled_shape_motion_latent"
-        config.dynamic_model.correspondence_temporal_weight = 0.01
-        config.dynamic_model.correspondence_acceleration_weight = 0.005
-        config.dynamic_model.correspondence_phase_consistency_weight = 0.005
-        config.dynamic_model.correspondence_start_fraction = 0.4
-        config.dynamic_model.correspondence_ramp_fraction = 0.2
     elif method == "动态共享-CPD对应点":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
         config.dynamic_model.method = "cpd_field_reference_correspondence"
+        config.dynamic_model.temporal_weight = 0.08
+        config.dynamic_model.temporal_acceleration_weight = 0.04
+        config.dynamic_model.phase_consistency_weight = 0.04
+        config.dynamic_model.periodicity_weight = 0.08
+        config.dynamic_model.deformation_weight = 0.008
     elif method == "动态共享-无先验4D场":
         config.phase_canonicalization.enabled = True
         config.dynamic_model.enabled = True
         config.dynamic_model.method = "prior_free_4d_field"
-        config.dynamic_model.canonical_hidden_dim = max(int(config.dynamic_model.canonical_hidden_dim), 192)
-        config.dynamic_model.canonical_hidden_layers = max(int(config.dynamic_model.canonical_hidden_layers), 5)
-        config.dynamic_model.temporal_weight = 0.02
-        config.dynamic_model.temporal_acceleration_weight = 0.01
-        config.dynamic_model.phase_consistency_weight = 0.01
-        config.dynamic_model.periodicity_weight = 0.05
-        config.dynamic_model.normal_weight = 0.15
-        config.dynamic_model.eikonal_weight = 0.08
-        config.dynamic_model.mesh_threshold = 0.0
+        config.dynamic_model.temporal_weight = 0.06
+        config.dynamic_model.temporal_acceleration_weight = 0.03
+        config.dynamic_model.phase_consistency_weight = 0.03
+        config.dynamic_model.periodicity_weight = 0.06
+        config.dynamic_model.deformation_weight = 0.0
     else:
         raise ValueError(f"未知实验方法: {method}")
 
@@ -465,6 +447,9 @@ def _evaluate_output(
     meshes: list[trimesh.Trimesh] = []
     chamfers: list[float] = []
     hausdorffs: list[float] = []
+    maes: list[float] = []
+    emds: list[float] = []
+    dices: list[float] = []
     for mesh_path, phase in mesh_items:
         try:
             mesh = trimesh.load(mesh_path, force="mesh")
@@ -477,11 +462,11 @@ def _evaluate_output(
             continue
         chamfers.append(compute_chamfer_distance(mesh, matched_gt))
         hausdorffs.append(compute_hausdorff_distance(mesh, matched_gt))
+        maes.append(compute_surface_mae(mesh, matched_gt))
+        emds.append(compute_earth_movers_distance(mesh, matched_gt))
+        dices.append(compute_dice_score(mesh, matched_gt))
 
     valid_summaries = [item for item in output.pointcloud_summaries if item.exported_point_count > 0]
-    watertight_ratio = float(
-        sum(int(mesh.is_watertight) for mesh in meshes) / max(len(meshes), 1)
-    ) if meshes else 0.0
 
     return {
         "方法": method,
@@ -491,10 +476,11 @@ def _evaluate_output(
         "平均点云置信度": _safe_mean(item.mean_confidence for item in valid_summaries),
         "平均样本SNR": _safe_mean(item.mean_sample_snr for item in valid_summaries),
         "平均切片提取率": _safe_mean(item.extracted_slice_ratio for item in valid_summaries),
-        "时间平滑度(mm/step)": float(compute_temporal_smoothness(meshes)) if len(meshes) >= 2 else float("nan"),
-        "水密比例": watertight_ratio,
         "平均CD(mm^2)": _safe_mean(chamfers),
         "平均HD95(mm)": _safe_mean(hausdorffs),
+        "平均表面MAE(mm)": _safe_mean(maes),
+        "平均EMD(mm)": _safe_mean(emds),
+        "平均Dice": _safe_mean(dices),
     }
 
 
@@ -508,13 +494,10 @@ def run_method_comparison(
     mode: str,
     dynamic_train_steps: int | None,
     dynamic_mesh_resolution: int | None,
-    include_prior_free: bool,
 ) -> pd.DataFrame:
     """运行静态方法与当前主动态方法的对比实验。"""
     gt_mesh = _load_gt_mesh(gt_mesh_path)
     methods = ["静态基线", "静态增强", "动态共享-全局基残差"]
-    if include_prior_free:
-        methods.append("动态共享-无先验4D场")
     results: list[dict[str, float | int | str]] = []
 
     for method in methods:
@@ -613,7 +596,6 @@ def main() -> None:
     parser.add_argument("--run-name", type=str, default=None, help="可选运行名称，会写入本次实验归档目录名")
     parser.add_argument("--dynamic-train-steps", type=int, default=None, help="覆盖动态模型训练步数")
     parser.add_argument("--dynamic-mesh-resolution", type=int, default=None, help="覆盖动态模型导出网格分辨率")
-    parser.add_argument("--include-prior-free", action="store_true", help="在方法对比中额外加入无先验 4D 场动态建模分支")
     parser.add_argument("--normal-weight", type=float, default=None, help="覆盖主方法法向约束权重")
     parser.add_argument("--temporal-weight", type=float, default=None, help="覆盖主方法一阶时间平滑权重")
     parser.add_argument("--temporal-acceleration-weight", type=float, default=None, help="覆盖主方法二阶时间正则权重")
@@ -662,7 +644,6 @@ def main() -> None:
                     mode=str(args.mode),
                     dynamic_train_steps=args.dynamic_train_steps,
                     dynamic_mesh_resolution=args.dynamic_mesh_resolution,
-                    include_prior_free=bool(args.include_prior_free),
                 )
                 emit_tables(comparison_df, run_dir, "method_comparison")
 

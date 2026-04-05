@@ -330,14 +330,24 @@ def load_reference_model(path: Path) -> GastricReferenceModel:
 
 	ry = np.zeros(centerline.shape[0], dtype=np.float64)
 	rz = np.zeros(centerline.shape[0], dtype=np.float64)
+	global_abs_y = np.abs(coord_y)
+	global_abs_z = np.abs(coord_z)
 	for idx in range(centerline.shape[0]):
 		mask = indices == idx
-		if mask.sum() < 24:
-			left = max(0, idx - 1)
-			right = min(centerline.shape[0] - 1, idx + 1)
+		search_radius = 1
+		while mask.sum() < 24 and (idx - search_radius >= 0 or idx + search_radius < centerline.shape[0]):
+			left = max(0, idx - search_radius)
+			right = min(centerline.shape[0] - 1, idx + search_radius)
 			mask = (indices >= left) & (indices <= right)
+			search_radius += 1
+		if not np.any(mask):
+			mask = np.ones_like(indices, dtype=bool)
 		local_y = coord_y[mask]
 		local_z = coord_z[mask]
+		if local_y.size == 0 or local_z.size == 0:
+			ry[idx] = float(np.percentile(global_abs_y, 92))
+			rz[idx] = float(np.percentile(global_abs_z, 92))
+			continue
 		ry[idx] = float(np.percentile(np.abs(local_y), 92))
 		rz[idx] = float(np.percentile(np.abs(local_z), 92))
 

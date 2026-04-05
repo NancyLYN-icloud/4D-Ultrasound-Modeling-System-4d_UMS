@@ -11,8 +11,9 @@ import pandas as pd
 KEY_METRICS = [
     "平均CD(mm^2)",
     "平均HD95(mm)",
-    "时间平滑度(mm/step)",
-    "水密比例",
+    "平均表面MAE(mm)",
+    "平均EMD(mm)",
+    "平均Dice",
     "平均点云置信度",
     "平均样本SNR",
     "平均切片提取率",

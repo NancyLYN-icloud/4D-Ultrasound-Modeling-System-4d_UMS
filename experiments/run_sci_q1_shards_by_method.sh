@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="/home/liuyanan/program/project/pcd/getMesh/4D-model/4D-Ultrasound-Modeling-System-4D-UMS-"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 BASE_SCRIPT="$ROOT_DIR/experiments/run_sci_q1_main_table.sh"
-OUT_ROOT="${OUT_ROOT:-/home/liuyanan/data/Research_Data/4D-UMS/experiment/controlled_observation_robustness_benchmark}"
+OUT_ROOT="${OUT_ROOT:-/home/tianjun0/liuyanan/data/4D-UMS/experiment/controlled_observation_robustness_benchmark}"
 RUN_LABEL_BASE="${RUN_LABEL_BASE:-equal_budget_robustness}"
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 LAUNCH_MODE="${LAUNCH_MODE:-background}"
 LOG_ROOT="${LOG_ROOT:-$OUT_ROOT/launcher_logs}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 METHOD_SHARDS=(
   "refcorr:动态共享-参考对应正则"
@@ -21,6 +23,7 @@ mkdir -p "$LOG_ROOT"
 echo "[ShardByMethod] out_root=$OUT_ROOT"
 echo "[ShardByMethod] run_timestamp=$RUN_TIMESTAMP"
 echo "[ShardByMethod] launch_mode=$LAUNCH_MODE"
+echo "[ShardByMethod] cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
 
 for shard in "${METHOD_SHARDS[@]}"; do
   slug="${shard%%:*}"
@@ -33,6 +36,7 @@ for shard in "${METHOD_SHARDS[@]}"; do
     "RUN_TIMESTAMP=$RUN_TIMESTAMP"
     "RUN_LABEL=$shard_label"
     "METHOD_FILTER=$slug"
+    "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
     bash
     "$BASE_SCRIPT"
   )

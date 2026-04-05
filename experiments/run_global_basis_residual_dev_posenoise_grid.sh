@@ -263,8 +263,9 @@ instance_df["config_name"] = instance_df["run_name"].str.split("_cfg_", n=1).str
 metrics = [
     "平均CD(mm^2)",
     "平均HD95(mm)",
-    "时间平滑度(mm/step)",
-    "水密比例",
+  "平均表面MAE(mm)",
+  "平均EMD(mm)",
+  "平均Dice",
     "平均点云置信度",
     "平均样本SNR",
     "平均切片提取率",
@@ -279,8 +280,8 @@ summary_df.columns = [
 grid_df = pd.read_csv(grid_config_path)
 summary_df = grid_df.merge(summary_df, on="config_name", how="left")
 summary_df = summary_df.sort_values(
-    ["平均CD(mm^2)_mean", "平均HD95(mm)_mean", "时间平滑度(mm/step)_mean"],
-    ascending=[True, True, True],
+    ["平均CD(mm^2)_mean", "平均HD95(mm)_mean", "平均表面MAE(mm)_mean", "平均EMD(mm)_mean", "平均Dice_mean"],
+    ascending=[True, True, True, True, False],
 ).reset_index(drop=True)
 summary_df.insert(0, "rank", summary_df.index + 1)
 summary_df.to_csv(config_summary_path, index=False)

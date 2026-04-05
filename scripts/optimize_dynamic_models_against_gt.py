@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from src.config import DynamicModelConfig, PointCloudPhaseSummary
 from src.modeling.dynamic_surface_reconstruction import reconstruct_dynamic_meshes_from_pointclouds
-from src.modeling.metrics import compute_chamfer_distance, compute_hausdorff_distance, compute_temporal_smoothness
+from src.modeling.metrics import compute_chamfer_distance, compute_dice_score, compute_earth_movers_distance, compute_hausdorff_distance, compute_surface_mae
 
 
 PHASE_PATTERNS = [
@@ -137,34 +137,41 @@ def _evaluate_folder(folder: Path, gt_items: list[dict[str, object]]) -> dict[st
             "mesh_count": 0,
             "mean_cd": float("inf"),
             "mean_hd95": float("inf"),
-            "temporal_smoothness": float("inf"),
             "centroid_mean": float("inf"),
             "centroid_max": float("inf"),
             "adjacent_mean": float("inf"),
             "from_base_mean": float("inf"),
-            "watertight_ratio": 0.0,
+            "mean_mae": float("inf"),
+            "mean_emd": float("inf"),
+            "mean_dice": 0.0,
         }
 
     chamfers: list[float] = []
     hausdorffs: list[float] = []
+    maes: list[float] = []
+    emds: list[float] = []
+    dices: list[float] = []
     for index, item in enumerate(sequence):
         gt = _match_gt(gt_items, item)
         chamfers.append(compute_chamfer_distance(item["mesh"], gt["mesh"], random_seed=7 + index * 2))
         hausdorffs.append(compute_hausdorff_distance(item["mesh"], gt["mesh"], random_seed=8 + index * 2))
+        maes.append(compute_surface_mae(item["mesh"], gt["mesh"], random_seed=9 + index * 2))
+        emds.append(compute_earth_movers_distance(item["mesh"], gt["mesh"], random_seed=10 + index * 2))
+        dices.append(compute_dice_score(item["mesh"], gt["mesh"], random_seed=11 + index * 2))
 
     centroid_mean, centroid_max = _centroid_stats(meshes)
     adjacent_mean, from_base_mean = _motion_stats(meshes)
-    watertight_ratio = float(sum(int(mesh.is_watertight) for mesh in meshes) / max(len(meshes), 1))
     return {
         "mesh_count": len(meshes),
         "mean_cd": float(np.mean(chamfers)),
         "mean_hd95": float(np.mean(hausdorffs)),
-        "temporal_smoothness": float(compute_temporal_smoothness(meshes, random_seed=97)),
         "centroid_mean": centroid_mean,
         "centroid_max": centroid_max,
         "adjacent_mean": adjacent_mean,
         "from_base_mean": from_base_mean,
-        "watertight_ratio": watertight_ratio,
+        "mean_mae": float(np.mean(maes)),
+        "mean_emd": float(np.mean(emds)),
+        "mean_dice": float(np.mean(dices)),
     }
 
 
@@ -172,11 +179,12 @@ def _overall_score(metrics: dict[str, float | int]) -> float:
     return float(
         1.0 * float(metrics["mean_cd"])
         + 0.12 * float(metrics["mean_hd95"])
-        + 0.08 * float(metrics["temporal_smoothness"])
+        + 0.08 * float(metrics["mean_mae"])
+        + 0.05 * float(metrics["mean_emd"])
         + 0.04 * float(metrics["centroid_max"])
         + 0.03 * float(metrics["adjacent_mean"])
         + 0.02 * float(metrics["from_base_mean"])
-        - 0.5 * float(metrics["watertight_ratio"])
+        - 0.5 * float(metrics["mean_dice"])
     )
 
 
@@ -228,7 +236,7 @@ def _base_dynamic_config(train_steps: int, mesh_resolution: int, max_points_per_
     )
 
 
-def _candidate_configs(train_steps: int, mesh_resolution: int, max_points_per_phase: int, include_prior_free: bool) -> list[tuple[str, DynamicModelConfig]]:
+def _candidate_configs(train_steps: int, mesh_resolution: int, max_points_per_phase: int) -> list[tuple[str, DynamicModelConfig]]:
     candidates: list[tuple[str, DynamicModelConfig]] = []
 
     basis_rank6 = _base_dynamic_config(train_steps, mesh_resolution, max_points_per_phase)
@@ -269,31 +277,6 @@ def _candidate_configs(train_steps: int, mesh_resolution: int, max_points_per_ph
     decoupled_motion.bootstrap_decay_fraction = 0.30
     candidates.append(("decoupled_motion_balanced", decoupled_motion))
 
-    decoupled_shape_motion = _base_dynamic_config(train_steps, mesh_resolution, max_points_per_phase)
-    decoupled_shape_motion.method = "shared_topology_decoupled_shape_motion_latent"
-    decoupled_shape_motion.out_subdir = "search_decoupled_shape_motion"
-    decoupled_shape_motion.shape_latent_dim = 64
-    decoupled_shape_motion.shape_offset_reg_weight = 0.01
-    decoupled_shape_motion.shape_spatial_weight = 0.03
-    decoupled_shape_motion.motion_mean_weight = 0.03
-    decoupled_shape_motion.motion_lipschitz_weight = 0.02
-    decoupled_shape_motion.bootstrap_offset_weight = 0.12
-    decoupled_shape_motion.bootstrap_decay_fraction = 0.30
-    candidates.append(("decoupled_shape_motion_balanced", decoupled_shape_motion))
-
-    if include_prior_free:
-        prior_free = _base_dynamic_config(train_steps, mesh_resolution, max_points_per_phase)
-        prior_free.method = "prior_free_4d_field"
-        prior_free.out_subdir = "search_prior_free_4d"
-        prior_free.canonical_hidden_dim = 224
-        prior_free.canonical_hidden_layers = 5
-        prior_free.temporal_weight = 0.02
-        prior_free.temporal_acceleration_weight = 0.01
-        prior_free.phase_consistency_weight = 0.01
-        prior_free.periodicity_weight = 0.05
-        prior_free.eikonal_weight = 0.08
-        candidates.append(("prior_free_4d_field", prior_free))
-
     return candidates
 
 
@@ -304,7 +287,6 @@ def main() -> None:
     parser.add_argument("--train-steps", type=int, default=72)
     parser.add_argument("--mesh-resolution", type=int, default=72)
     parser.add_argument("--max-points-per-phase", type=int, default=3000)
-    parser.add_argument("--include-prior-free", action="store_true")
     args = parser.parse_args()
 
     pointclouds = sorted(args.pointcloud_root.glob("*.ply"))
@@ -322,7 +304,6 @@ def main() -> None:
         train_steps=args.train_steps,
         mesh_resolution=args.mesh_resolution,
         max_points_per_phase=args.max_points_per_phase,
-        include_prior_free=bool(args.include_prior_free),
     ):
         print(f"=== RUN {name} ===")
         reconstruct_dynamic_meshes_from_pointclouds(

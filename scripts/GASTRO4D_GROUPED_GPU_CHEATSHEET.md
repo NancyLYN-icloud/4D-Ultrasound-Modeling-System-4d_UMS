@@ -38,9 +38,9 @@
 下面这条命令会完成 grouped GPU 流程的全部核心步骤：
 
 - 数据集根目录落盘
-- simuilate_data 监测信号生成
+- benchmark clean monitor 生成
 - simuilate_data phase model 生成
-- 基于 simuilate_data 发布 benchmark clean 数据
+- 基于 simuilate_data phase model 生成 benchmark clean scanner 数据
 - clean manifest 构建
 - benchmark condition 生成
 
@@ -57,6 +57,7 @@ bash scripts/build_gastro4d_ussim_grouped_gpu.sh
 - `SOURCE_DATA_ROOT` 指向原始数据根目录。
 - `UMS_DATA_ROOT` 指向 grouped GPU 流程要写入的数据根目录。
 - `SCANNER_MODE` 默认就是 `improved`，表示直接基于 phase model 生成 improved scanner。
+- scanner 默认按 `900s x 15fps = 13500` 帧生成；如果只做 smoke 测试，可临时把 `SCANNER_DURATION_SECONDS` 和 `SCANNER_FPS` 调低。
 - 这条命令只调用新加的 grouped GPU 脚本，不会把旧 CPU 流程改掉。
 
 ## 分步执行
@@ -85,24 +86,25 @@ scripts/materialize_gastro4d_ussim_dataset_gpu.py \
 - 同时会写出 `source_pointcloud_manifest_gpu.csv`，记录实例名、组别、split 和目标相对路径。
 - 如果你想减少磁盘复制，可结合脚本里的 `--link-mode symlink` 使用软链接模式。
 
-### 3. 先生成 simuilate_data，再发布 grouped benchmark clean 数据
+### 3. 先生成 benchmark clean monitor，再生成 simuilate_data phase model 与 clean scanner
 
 ```bash
 /home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_monitor_stream_gpu.py
 /home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_phase_sequence_models_gpu.py
-/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_scanner_from_phase_models_gpu.py --scanner-mode improved --no-png
+/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python scripts/generate_scanner_from_phase_models_gpu.py --scanner-mode improved --fps 15 --duration-seconds 900 --no-png
 ```
 
 这三步分别负责：
 
-- 先在 `simuilate_data/instances/<split>/<group>/<instance>/` 下生成 `monitor_stream`
-- 再在同一 grouped phase 目录下生成 `phase_sequence_models_run_*`
-- 最后让 `benchmark/instances/<split>/<group>/<instance>/` 基于前面的 `simuilate_data` 直接生成 improved `scanner_sequence`，并发布 clean `monitor_stream`
+- 先在 `benchmark/instances/<split>/<group>/<instance>/` 下生成 `monitor_stream`
+- 再在 `simuilate_data/instances/<split>/<group>/<instance>/` 下生成 `phase_sequence_models_run_*`
+- 最后让 `benchmark/instances/<split>/<group>/<instance>/` 基于前面的 `simuilate_data` 直接生成 improved `scanner_sequence`
 
 说明：
 
 - 默认 `--no-png` 可减少磁盘占用。
 - 如果你要抽检图像生成质量，可移除 `--no-png`。
+- 如果不显式传参，scanner 脚本默认也是 `900s`、`15fps`。
 - 如果只想处理部分组或部分实例，可以为这些脚本追加 `--groups` 或 `--instances` 参数。
 - 这一阶段的核心依赖关系是：`benchmark` 不是独立生成的，而是依托 `simuilate_data` 中的 phase model 结果直接生成。
 - `--scanner-mode improved` 对应原来 improved scanner 的切片逻辑，但这里不再经过 `instances_before` 中转。
@@ -138,7 +140,6 @@ scripts/generate_benchmark_conditions_gpu.py \
 - `$UMS_DATA_ROOT/benchmark/manifests/source_pointcloud_manifest_gpu.csv`
 - `$UMS_DATA_ROOT/benchmark/manifests/benchmark_manifest_gpu.csv`
 - `$UMS_DATA_ROOT/benchmark/manifests/benchmark_condition_manifest_gpu.csv`
-- `$UMS_DATA_ROOT/simuilate_data/instances/<split>/<group>/<instance>/monitor_stream.npz`
 - `$UMS_DATA_ROOT/benchmark/instances/<split>/<group>/<instance>/`
 - `$UMS_DATA_ROOT/simuilate_data/instances/<split>/<group>/<instance>/`
 - `$UMS_DATA_ROOT/benchmark/conditions/<condition>/<split>/<group>/<instance>/`

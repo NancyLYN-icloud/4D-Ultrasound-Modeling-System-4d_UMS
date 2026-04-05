@@ -134,7 +134,7 @@ class DynamicModelConfig:
     """时空耦合动态隐式建模配置。"""
 
     enabled: bool = False
-    method: str = "shared_topology_vertex_field"
+    method: str = "shared_topology_global_basis_residual"
     out_subdir: str = "dynamic_meshes"
     voxel_size: float = 2.0
     max_points_per_phase: int = 3000

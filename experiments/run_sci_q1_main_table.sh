@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="/home/liuyanan/program/project/pcd/getMesh/4D-model/4D-Ultrasound-Modeling-System-4D-UMS-"
-PYTHON_BIN="/home/liuyanan/program/environment/miniconda3/envs/modeling_py310/bin/python"
-MANIFEST="$ROOT_DIR/experiments/benchmark_condition_manifest.csv"
-OUT_ROOT="${OUT_ROOT:-/home/liuyanan/data/Research_Data/4D-UMS/experiment/controlled_observation_robustness_benchmark}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+PYTHON_BIN="${PYTHON_BIN:-/home/tianjun0/anaconda3/envs/modeling_py310/bin/python}"
+DATA_ROOT="${DATA_ROOT:-/home/tianjun0/liuyanan/data/4D-UMS/Gastro4D-USSim}"
+MANIFEST="${MANIFEST:-}"
+OUT_ROOT="${OUT_ROOT:-/home/tianjun0/liuyanan/data/4D-UMS/experiment/controlled_observation_robustness_benchmark}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 SPLIT="${SPLIT:-test}"
 CONDITIONS="${CONDITIONS:-Clean,Sparse,PoseNoise}"
 MODE="${MODE:-full-paper}"
@@ -15,6 +18,18 @@ RUN_LABEL="${RUN_LABEL:-equal_budget_robustness}"
 RUN_TIMESTAMP="${RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 METHOD_FILTER="${METHOD_FILTER:-all}"
 METHOD_PROFILE="${METHOD_PROFILE:-historical_best_eqbudget}"
+
+if [[ -z "$MANIFEST" ]]; then
+  for candidate in \
+    "$DATA_ROOT/benchmark/manifests/benchmark_condition_manifest_gpu.csv" \
+    "$DATA_ROOT/benchmark/manifests/benchmark_condition_manifest.csv" \
+    "$ROOT_DIR/experiments/benchmark_condition_manifest.csv"; do
+    if [[ -f "$candidate" ]]; then
+      MANIFEST="$candidate"
+      break
+    fi
+  done
+fi
 
 METHODS=(
   "动态共享-参考对应正则"
@@ -54,9 +69,20 @@ EOF
 echo "[RobustnessBenchmark] manifest=$MANIFEST"
 echo "[RobustnessBenchmark] out_root=$OUT_ROOT"
 echo "[RobustnessBenchmark] batch_dir=$BATCH_DIR"
+echo "[RobustnessBenchmark] cuda_visible_devices=$CUDA_VISIBLE_DEVICES"
 echo "[RobustnessBenchmark] split=$SPLIT conditions=$CONDITIONS"
 echo "[RobustnessBenchmark] method_filter=$METHOD_FILTER"
 echo "[RobustnessBenchmark] method_profile=$METHOD_PROFILE"
+
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "[RobustnessBenchmark] benchmark manifest not found -> $MANIFEST" >&2
+  exit 1
+fi
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "[RobustnessBenchmark] python executable not found -> $PYTHON_BIN" >&2
+  exit 1
+fi
 
 condition_enabled() {
   local value="$1"
@@ -240,7 +266,7 @@ tail -n +2 "$MANIFEST" | while IFS=, read -r instance_name shape_family split co
     append_method_specific_args "$method" method_extra_args
 
     echo "[SCI-Q1] instance=$instance_name split=$split condition=$condition method=$method"
-    "$PYTHON_BIN" "$ROOT_DIR/scripts/run_single_dynamic_shared.py" \
+    CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" "$PYTHON_BIN" "$ROOT_DIR/scripts/run_single_dynamic_shared.py" \
       --mode "$MODE" \
       --method "$method" \
       --instance-name "$instance_name" \
@@ -258,7 +284,7 @@ done
 
 AGGREGATED_DIR="$BATCH_DIR/aggregated"
 echo "[RobustnessBenchmark] aggregating results into $AGGREGATED_DIR"
-"$PYTHON_BIN" "$ROOT_DIR/scripts/aggregate_dynamic_shared_results.py" \
+CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" "$PYTHON_BIN" "$ROOT_DIR/scripts/aggregate_dynamic_shared_results.py" \
   --runs-root "$BATCH_DIR" \
   --manifest "$MANIFEST" \
   --output-dir "$AGGREGATED_DIR"
